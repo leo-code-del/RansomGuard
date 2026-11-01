@@ -605,6 +605,25 @@ class UpdateTests(TempDirTest):
             rg.replace_install_exe(boom)
         self.assertEqual(rg.INSTALL_EXE.read_bytes(), b"old version")
 
+    def test_cleanup_old_files(self):
+        appdir = self.dir / "app"
+        appdir.mkdir()
+        old = [rg.INSTALL_DIR / "RansomGuard.old-1234abcd.exe", rg.INSTALL_DIR / "RansomGuard.old-5678ef90.exe",
+               appdir / "alert.json", appdir / "alert.ps1"]
+        keep = [appdir / "guard.log", appdir / "settings.json", appdir / "state.json"]
+        for p in old + keep:
+            p.write_bytes(b"x")
+        running = rg.INSTALL_DIR / "RansomGuard.old-running.exe"
+        shutil.copy2(os.path.join(os.environ["SystemRoot"], "System32", "PING.EXE"), running)
+        proc = subprocess.Popen([str(running), "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        with mock.patch.object(rg, "app_dir", lambda: appdir):
+            rg.cleanup_old_files()  # must not fail on the one that is still running
+        self.assertFalse(any(p.exists() for p in old))
+        self.assertTrue(all(p.exists() for p in keep))
+        self.assertTrue(rg.INSTALL_EXE.exists())
+
     def test_replacing_a_running_exe(self):
         shutil.copy2(os.path.join(os.environ["SystemRoot"], "System32", "PING.EXE"), rg.INSTALL_EXE)
         proc = subprocess.Popen([str(rg.INSTALL_EXE), "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL)

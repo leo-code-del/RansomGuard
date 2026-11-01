@@ -61,7 +61,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.5.0"  # bump this for a new release and create the matching GitHub Release (v1.5.0)
+VERSION = "1.5.1"  # bump this for a new release and create the matching GitHub Release (v1.5.1)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -1269,6 +1269,16 @@ def restore_hint() -> str:
     return tr(f"雙擊 {bat} 恢復網路", f"double-click {bat} to restore the network")
 
 
+def cleanup_old_files():
+    """Remove what older versions left behind: exes replaced by an update (RansomGuard.old-*.exe)
+    and the alert files very early versions wrote to the app folder."""
+    for p in [*INSTALL_DIR.glob("RansomGuard.old-*.exe"), app_dir() / "alert.json", app_dir() / "alert.ps1"]:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:  # still running (e.g. an open control panel); tried again next time
+            pass
+
+
 def version_tuple(v: str) -> tuple:
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
@@ -1371,6 +1381,7 @@ def install(report=print) -> bool:
         # a program that runs as administrator must live in a folder only administrators can change
         report(tr(f"複製程式到 {INSTALL_DIR} ...", f"Copying the program to {INSTALL_DIR} ..."))
         replace_install_exe(lambda: shutil.copy2(sys.executable, str(INSTALL_EXE)))
+    cleanup_old_files()
     exe, args = launcher()
     workdir = str(INSTALL_DIR if FROZEN else Path(os.path.abspath(__file__)).parent)
     report(tr("建立登入時自動執行的排程工作...", "Creating a scheduled task that runs at sign-in..."))
@@ -1394,6 +1405,9 @@ def install(report=print) -> bool:
         f"$s.TargetPath = {_ps_quote(exe)}; $s.Arguments = {_ps_quote((args + ' --gui').strip() if args else '')}; "
         f"$s.WorkingDirectory = {_ps_quote(workdir)}; "
         f"$s.Description = {_ps_quote(tr('RansomGuard 控制台', 'RansomGuard control panel'))}; $s.Save()")
+    # Windows caches icons per file path, and the installed path never changes: refresh the cache so the
+    # shortcut and taskbar don't keep showing an older version's icon
+    _run([sys_exe("ie4uinit.exe"), "-show"])
     report(tr("開始監控...", "Starting monitoring..."))
     ok = start_monitor()
     log.info(tr("已安裝背景監控：%s %s", "Background monitoring installed: %s %s"), exe, args)
@@ -1495,6 +1509,29 @@ def status_info():
     return mon, net
 
 
+def set_window_icons(root, source: str):
+    """Give the window its own big (taskbar, Alt+Tab) and small (title bar) icons from source (.exe or .ico).
+    Tk only sets the window class icon; without a window icon the taskbar shows Windows' cached icon
+    for the exe path, which could still be an old version's icon."""
+    if not IS_WINDOWS:
+        return
+    try:
+        u = ctypes.windll.user32
+        u.PrivateExtractIconsW.argtypes = [ctypes.c_wchar_p, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                           ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint,
+                                           ctypes.c_uint]
+        u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        root.update_idletasks()
+        hwnd = int(root.wm_frame(), 16)
+        for which, metric in ((1, 11), (0, 49)):  # ICON_BIG / SM_CXICON, ICON_SMALL / SM_CXSMICON
+            size = u.GetSystemMetrics(metric)  # already scaled for the display (the process is DPI aware)
+            h = ctypes.c_void_p()
+            if u.PrivateExtractIconsW(source, 0, size, size, ctypes.byref(h), None, 1, 0) == 1 and h:
+                u.SendMessageW(hwnd, 0x80, which, h)  # WM_SETICON
+    except Exception:
+        log.exception(tr("無法設定視窗圖示", "Could not set the window icon"))
+
+
 def gui(auto_update=False):
     import queue
     import tkinter as tk
@@ -1520,6 +1557,7 @@ def gui(auto_update=False):
         root.iconbitmap(default=icon)  # the .exe uses its embedded icon; default= applies it to dialogs too
     except tk.TclError:
         pass
+    set_window_icons(root, icon)
     scale = root.winfo_fpixels("1i") / 96  # scale spacing with the display scaling
 
     def px(n):
@@ -1915,6 +1953,7 @@ def run(args):
         sys.exit(0)
     if not args.dry_run:  # safe now: no other monitor is watching the old canary files
         remove_canaries(LEGACY_CANARY_NAMES)
+        cleanup_old_files()
 
     st = load_state()
     if st.get("triggered_at"):
