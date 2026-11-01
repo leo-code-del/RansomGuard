@@ -49,8 +49,19 @@ try {
             Write-Host "      無法啟用 $($a.Name)：$($_.Exception.Message)" -ForegroundColor Red
         }
     }
+    # 斷網時若改用防火牆封鎖，把防火牆還原成原本的設定
+    if ($st -and $st.firewall) {
+        foreach ($p in @($st.firewall)) {
+            try {
+                Set-NetFirewallProfile -Name $p.Name -Enabled $p.Enabled -DefaultInboundAction $p.In -DefaultOutboundAction $p.Out -ErrorAction Stop
+                Write-Host "      已還原防火牆設定 $($p.Name)"
+            } catch {
+                Write-Host "      無法還原防火牆設定 $($p.Name)：$($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
     Start-Sleep -Seconds 3
-    ipconfig /renew | Out-Null
+    & "$env:SystemRoot\System32\ipconfig.exe" /renew | Out-Null
 
     Write-Host '[2/3] 清除觸發紀錄、重設誘餌檔...'
     if (Test-Path $StateFile) { Remove-Item $StateFile -Force }

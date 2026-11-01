@@ -47,7 +47,11 @@ try {
 
     Write-Host '[3/4] 建立登入時自動執行的排程工作...'
     $user = "$env:USERDOMAIN\$env:USERNAME"
-    $action = New-ScheduledTaskAction -Execute $pyw -Argument ('"' + $Script + '"') -WorkingDirectory (Split-Path $Script)
+    # -E 忽略 PYTHON* 環境變數、-P 不從程式所在資料夾載入模組（Python 3.11+），
+    # 避免有人在 D:\python 放假的 json.py 之類的檔案，被以系統管理員權限執行
+    $hasP = "$(& $py -c 'import sys; print(int(sys.version_info >= (3, 11)))')".Trim() -eq '1'
+    $pyArgs = if ($hasP) { '-E -P ' } else { '-E ' }
+    $action = New-ScheduledTaskAction -Execute $pyw -Argument ($pyArgs + '"' + $Script + '"') -WorkingDirectory (Split-Path $Script)
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
     $setArgs = @{
