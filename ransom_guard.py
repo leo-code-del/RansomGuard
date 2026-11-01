@@ -63,7 +63,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.5.3"  # bump this for a new release and create the matching GitHub Release (v1.5.3)
+VERSION = "1.5.4"  # bump this for a new release and create the matching GitHub Release (v1.5.4)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
