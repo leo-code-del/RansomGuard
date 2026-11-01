@@ -799,8 +799,10 @@ def _known_ext(ext: str) -> bool:
 def suspicious_ext(event_type: str, src: str, dest: str) -> bool:
     if event_type == "moved":
         s, d = Path(src).suffix.lower(), Path(dest).suffix.lower()
+        # a tool that keeps the old extension and adds a separated suffix is fine (photo.jpg ->
+        # photo.jpg_original, exiftool); appending letters straight onto it is not (photo.jpg -> photo.jpgcrypt)
         return (s in COMMON_EXTS and not _known_ext(d) and d != "" and s != d
-                and not d.startswith(s))  # photo.jpg -> photo.jpg_original (exiftool) keeps the extension
+                and not (d.startswith(s) and not d[len(s):len(s) + 1].isalnum()))
     if event_type == "created":
         sfx = [x.lower() for x in Path(src).suffixes]
         return (len(sfx) >= 2 and not _known_ext(sfx[-1])

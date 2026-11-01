@@ -123,6 +123,9 @@ class ExtensionTests(unittest.TestCase):
         self.assertTrue(rg.suspicious_ext("moved", r"C:\d\a.pdf", r"C:\d\a.pdf.encrypted"))
         self.assertTrue(rg.suspicious_ext("created", r"C:\d\budget.xlsx.crypt", ""))
         self.assertTrue(rg.suspicious_ext("moved", r"C:\d\a.txt", r"C:\d\a.wncry"))
+        # letters appended straight onto the extension, with no separating dot
+        self.assertTrue(rg.suspicious_ext("moved", r"C:\d\photo.jpg", r"C:\d\photo.jpgcrypt"))
+        self.assertTrue(rg.suspicious_ext("moved", r"C:\d\note.txt", r"C:\d\note.txtlocked"))
 
     def test_everyday_names_are_not_suspicious(self):
         benign_created = [
