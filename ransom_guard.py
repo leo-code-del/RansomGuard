@@ -30,8 +30,8 @@ RansomGuard — 偵測疑似勒索病毒的加密行為，觸發時自動切斷�
 需要套件：pip install watchdog
 紀錄檔位置：%LOCALAPPDATA%\\RansomGuard\\guard.log
 
-打包成單一執行檔（輸出 dist\\RansomGuard.exe）：
-  python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard ^
+打包成單一執行檔（輸出 dist\\RansomGuard.exe；圖標 icon.ico 由 make_icon.py 產生）：
+  python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon ..\\icon.ico ^
          --distpath dist --workpath build --specpath build ransom_guard.py
 
 下載與更新：https://github.com/leo-code-del/RansomGuard/releases
@@ -57,7 +57,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.0.0"  # 發布新版時改這裡，並在 GitHub 建立對應的 Release（v1.0.0）
+VERSION = "1.1.0"  # 發布新版時改這裡，並在 GitHub 建立對應的 Release（v1.1.0）
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # 用 PyInstaller 打包成 .exe 執行中
 TASK_NAME = "RansomGuard"
@@ -1206,6 +1206,11 @@ def gui():
     root = tk.Tk()
     root.title("RansomGuard 控制台")
     root.resizable(False, False)
+    icon = sys.executable if FROZEN else os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+    try:
+        root.iconbitmap(default=icon)  # .exe 直接用內嵌的圖標；default 讓對話框也套用
+    except tk.TclError:
+        pass
     scale = root.winfo_fpixels("1i") / 96  # 間距跟著螢幕縮放比例放大
 
     def px(n):

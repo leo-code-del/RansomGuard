@@ -1,4 +1,8 @@
+<img src="icon.png" width="96" alt="">
+
 # RansomGuard
+
+**中文** | [English](README.en.md)
 
 偵測勒索病毒的加密行為，一發現異常就**自動切斷網路**並跳出全螢幕警告，避免檔案繼續被加密、資料被傳出去。
 
@@ -72,9 +76,11 @@ RansomGuard.exe --version    顯示版本
 ```
 pip install watchdog pyinstaller
 python ransom_guard.py --gui
-python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard ^
+python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon ..\icon.ico ^
        --distpath dist --workpath build --specpath build ransom_guard.py
 ```
+
+圖標 `icon.ico` / `icon.png` 由 `make_icon.py` 產生（需要 `pip install pillow`），要改圖標就改這個檔案再執行一次。
 
 不想用 exe、直接用 Python 執行的話，專案裡有幾個輔助檔案（要和 `ransom_guard.py` 放在同一個資料夾）：
 
@@ -88,12 +94,12 @@ python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard ^
 
 ### 發布新版
 
-1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.0.1"`。
+1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.1.1"`。
 2. 重新打包，提交並推送。
 3. 建立 Release 並附上 exe：
 
    ```
-   gh release create v1.0.1 dist\RansomGuard.exe --title "RansomGuard 1.0.1" --notes "更新內容..."
+   gh release create v1.1.1 dist\RansomGuard.exe --title "RansomGuard 1.1.1" --notes "更新內容..."
    ```
 
 README 的下載按鈕永遠指向最新版本，不需要修改。
