@@ -25,6 +25,7 @@ Usage (Windows; normal mode needs administrator rights):
   python ransom_guard.py --dry-run   test mode: log and show alerts only, never cut the network
   python ransom_guard.py --restore   restore the network and restart background monitoring
   python ransom_guard.py --install   install / update background monitoring (the .exe is copied to Program Files)
+  python ransom_guard.py --update    open the control panel and update to the latest release right away
   python ransom_guard.py --test-alert  preview the full-screen warning (no detection, no network cut)
   python ransom_guard.py --watch D:\\Data --watch E:\\Backup   watch custom folders
   python ransom_guard.py --lang en   English interface (zh = Traditional Chinese; defaults to the Windows
@@ -60,7 +61,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.4.2"  # bump this for a new release and create the matching GitHub Release (v1.4.2)
+VERSION = "1.5.0"  # bump this for a new release and create the matching GitHub Release (v1.5.0)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -1300,6 +1301,29 @@ def replace_install_exe(write):
             ctypes.WinDLL("kernel32").MoveFileExW(str(old), None, 4)  # MOVEFILE_DELAY_UNTIL_REBOOT
 
 
+def latest_release():
+    """(version, RansomGuard.exe asset or None) of the newest release on GitHub."""
+    import urllib.request
+
+    req = urllib.request.Request(UPDATE_API, headers={"User-Agent": "RansomGuard",
+                                                      "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        rel = json.load(r)
+    return rel["tag_name"].lstrip("v"), next((a for a in rel["assets"] if a["name"] == "RansomGuard.exe"), None)
+
+
+def check_for_update():
+    """The newer version on GitHub, or None (up to date, not the packaged exe, or GitHub unreachable)."""
+    if not FROZEN:
+        return None
+    try:
+        latest, asset = latest_release()
+    except Exception as ex:
+        log.info(tr("無法檢查更新：%s", "Could not check for updates: %s"), ex)
+        return None
+    return latest if asset is not None and version_tuple(latest) > version_tuple(VERSION) else None
+
+
 def fetch_update(report):
     """If GitHub has a newer release, download it, check its SHA-256 against the one GitHub publishes
     and install it as INSTALL_EXE. Returns the new version, or None (already latest / check failed)."""
@@ -1308,15 +1332,10 @@ def fetch_update(report):
 
     report(tr("檢查新版本...", "Checking for a new version..."))
     try:
-        req = urllib.request.Request(UPDATE_API, headers={"User-Agent": "RansomGuard",
-                                                          "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            rel = json.load(r)
-        latest = rel["tag_name"].lstrip("v")
+        latest, asset = latest_release()
         if version_tuple(latest) <= version_tuple(VERSION):
             report(tr(f"  已經是最新版本（v{VERSION}）", f"  Already the latest version (v{VERSION})"))
             return None
-        asset = next((a for a in rel["assets"] if a["name"] == "RansomGuard.exe"), None)
         if asset is None:
             raise RuntimeError(tr("新版本沒有附上 RansomGuard.exe", "the new release has no RansomGuard.exe"))
         algo, _, want = (asset.get("digest") or "").partition(":")
@@ -1418,6 +1437,40 @@ def uninstall(report=print) -> bool:
     return True
 
 
+UPDATE_CHECK_DELAY = 120           # first update check this many seconds after the monitor starts
+UPDATE_CHECK_INTERVAL = 6 * 3600   # then check again this often
+
+
+def ask_update(new: str) -> bool:
+    """Ask whether to update now (a topmost Yes/No box)."""
+    text = tr(f"RansomGuard v{new} 已推出（目前是 v{VERSION}）。\n\n要現在更新嗎？控制台會開啟並自動完成更新。",
+              f"RansomGuard v{new} is available (you have v{VERSION}).\n\n"
+              "Update now? The control panel will open and update automatically.")
+    # MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST; IDYES = 6
+    return ctypes.windll.user32.MessageBoxW(None, text, "RansomGuard", 0x4 | 0x40 | 0x10000 | 0x40000) == 6
+
+
+def update_watcher(stop):
+    """Background monitor: whenever GitHub has a newer release, ask the user to update
+    (each version once per sign-in) and, on Yes, open the control panel to do it."""
+    asked = set()
+    if stop.wait(UPDATE_CHECK_DELAY):
+        return
+    while True:
+        new = check_for_update()
+        if new and new not in asked:
+            asked.add(new)
+            init_lang()
+            log.info(tr("有新版本 v%s，詢問是否更新", "Version %s is available; asking whether to update"), new)
+            if ask_update(new):
+                try:
+                    subprocess.Popen([str(INSTALL_EXE), "--update"], cwd=str(INSTALL_DIR))
+                except OSError as ex:
+                    log.error(tr("無法開啟控制台更新：%s", "Could not open the control panel to update: %s"), ex)
+        if stop.wait(UPDATE_CHECK_INTERVAL):
+            return
+
+
 # ---------------- Control panel window ----------------
 def status_info():
     """The control panel's two status cards: ((text, light, note), (text, light, note)); light is ok / warn / bad / off."""
@@ -1442,7 +1495,7 @@ def status_info():
     return mon, net
 
 
-def gui():
+def gui(auto_update=False):
     import queue
     import tkinter as tk
     from tkinter import messagebox, scrolledtext
@@ -1562,6 +1615,11 @@ def gui():
                     write(msg, "err" if msg.startswith(("[失敗]", "[Failed]")) else None)
                 elif kind == "status":
                     show_status(msg)
+                elif kind == "update":  # a newer version was found when the window opened
+                    if msg and not w.get("working") and messagebox.askyesno(
+                            "RansomGuard", tr(f"有新版本 v{msg}（目前是 v{VERSION}）。\n\n要現在更新嗎？",
+                                              f"Version {msg} is available (you have v{VERSION}).\n\nUpdate now?")):
+                        run_bg(install)
                 else:
                     for b in buttons:
                         b.config(state="normal")
@@ -1682,8 +1740,8 @@ def gui():
                  justify="left").pack(anchor="w", pady=(px(4), 0))
 
     def show_panel():
-        """Show the control panel at one fixed size that fits both languages, so switching the
-        language doesn't resize the window (English text is wider, JhengHei lines are taller)."""
+        """Show the control panel at one fixed size that fits both languages (English text is wider),
+        so switching the language doesn't resize the window or move anything in it."""
         global LANG
         chosen, sizes = LANG, []
         root.withdraw()
@@ -1697,12 +1755,18 @@ def gui():
         refresh()
         center()
         root.deiconify()
+        if auto_update:  # opened from the "new version available" prompt
+            root.after(300, lambda: run_bg(install))
+        else:
+            threading.Thread(target=lambda: q.put(("update", check_for_update())), daemon=True).start()
 
     def build():
         if "frame" in w:
             w["frame"].destroy()
         buttons.clear()
-        w["font"] = FONT = tr("Microsoft JhengHei UI", "Segoe UI")
+        # one font for both languages (JhengHei has its own Latin letters): with the same line heights
+        # every row stays exactly where it is when the language is switched
+        w["font"] = FONT = "Microsoft JhengHei UI"
         root.title(tr("RansomGuard 控制台", "RansomGuard Control Panel"))
         w["frame"] = frame = tk.Frame(root, bg=C["bg"])
         frame.pack(fill="both", expand=True)
@@ -1718,7 +1782,7 @@ def gui():
                  bg=C["header"]).pack(side="left", anchor="s", padx=(px(8), 0), pady=(0, px(4)))
         # language switch: the button shows the *other* language
         rim, b = make_button(top, tr("English", "中文(繁體)"), on_lang, "header")
-        b.config(font=(tr("Segoe UI", "Microsoft JhengHei UI"), 10), padx=px(10), pady=px(2))
+        b.config(font=(FONT, 10), padx=px(10), pady=px(2), width=10)  # same width in both languages
         rim.pack(side="right")
         tk.Label(hdr, text=tr("偵測勒索病毒行為，發現異常時自動切斷網路",
                               "Detects ransomware behavior and cuts off the network automatically"),
@@ -1740,15 +1804,15 @@ def gui():
                      bg=C["card"]).pack(anchor="w", padx=px(16), pady=(px(12), 0))
             row = tk.Frame(f, bg=C["card"])
             row.pack(anchor="w", padx=px(16))
-            # the status light always uses JhengHei: the ● in Segoe UI is tiny
-            dot = tk.Label(row, text="●", font=("Microsoft JhengHei UI", 12), fg=C["off"], bg=C["card"])
+            dot = tk.Label(row, text="●", font=(FONT, 12), fg=C["off"], bg=C["card"])
             dot.pack(side="left")
             val = tk.Label(row, text=tr("讀取中...", "Loading..."), font=(FONT, 15, "bold"),
                            fg=C["text"], bg=C["card"])
             val.pack(side="left", padx=(px(4), 0))
-            detail = tk.Label(f, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"],
-                              justify="left", wraplength=px(230))
-            detail.pack(anchor="w", padx=px(16), pady=(0, px(12)))
+            # always two lines tall, so a note that wraps in one language doesn't make the card taller
+            detail = tk.Label(f, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"], height=2,
+                              anchor="nw", justify="left", wraplength=px(250))
+            detail.pack(fill="x", padx=px(16), pady=(0, px(8)))
             return dot, val, detail
 
         w["mon"] = card(0, tr("背景監控", "Background monitoring"))
@@ -1797,7 +1861,7 @@ def gui():
         foot = tk.Frame(body, bg=C["bg"])
         foot.pack(fill="x", pady=(px(10), 0))
         rim, b = make_button(foot, tr("解除安裝", "Uninstall"), on_uninstall, "danger")
-        b.config(font=(FONT, 10), padx=px(10), pady=px(4))
+        b.config(font=(FONT, 10), padx=px(10), pady=px(4), width=10)  # same width in both languages
         rim.pack(side="right")
 
     root.protocol("WM_DELETE_WINDOW", on_close)
@@ -1897,6 +1961,8 @@ def run(args):
     if PROCESS_MONITOR and IS_WINDOWS:
         procmon = ProcessMonitor(handler.fire, kill=not args.dry_run)
         procmon.start()
+    if FROZEN and not args.dry_run:
+        threading.Thread(target=update_watcher, args=(stop,), daemon=True).start()
     restarts = 0
 
     log.info(tr("RansomGuard %s 開始監控%s：%s", "RansomGuard %s started monitoring%s: %s"), VERSION,
@@ -1944,6 +2010,8 @@ def main():
                     help=tr("開始監控（.exe 不加參數會開啟控制台）",
                             "start monitoring (the .exe opens the control panel when run without options)"))
     ap.add_argument("--gui", action="store_true", help=tr("開啟控制台", "open the control panel"))
+    ap.add_argument("--update", action="store_true",
+                    help=tr("開啟控制台並立刻更新到最新版本", "open the control panel and update to the latest version"))
     ap.add_argument("--dry-run", action="store_true",
                     help=tr("測試模式，不會真的斷網", "test mode: never actually cut off the network"))
     ap.add_argument("--restore", action="store_true",
@@ -1977,8 +2045,8 @@ def main():
             log.exception(tr("安裝失敗", "Install failed"))
             ok = False
         sys.exit(0 if ok else 1)
-    elif args.gui or (FROZEN and not (args.monitor or args.dry_run or args.watch)):
-        gui()
+    elif args.gui or args.update or (FROZEN and not (args.monitor or args.dry_run or args.watch)):
+        gui(auto_update=args.update)
     else:
         run(args)
 

@@ -57,7 +57,9 @@ Watched folders: Desktop, Documents, Pictures, Downloads, Videos, Music.
 
 ## Update
 
-Open "RansomGuard" on the desktop and click **Install / update and start monitoring**. It checks GitHub for a newer release, downloads it, verifies it against the SHA-256 that GitHub publishes, installs it and reopens the control panel with the new version. Without an internet connection it simply reinstalls the current version. The current version number is shown in the top-left corner of the control panel.
+RansomGuard tells you when a new version is out: the background monitor checks GitHub two minutes after you sign in and then every 6 hours, and the control panel checks when it opens. Answer **Yes** and it updates by itself (each version is asked about once per sign-in).
+
+To update by hand, open "RansomGuard" on the desktop and click **Install / update and start monitoring**. It checks GitHub for a newer release, downloads it, verifies it against the SHA-256 that GitHub publishes, installs it and reopens the control panel with the new version. Without an internet connection it simply reinstalls the current version. The current version number is shown in the top-left corner of the control panel.
 
 > Versions before 1.4.0 can't update themselves: download the new `RansomGuard.exe` from [Releases](https://github.com/leo-code-del/RansomGuard/releases) once, run it and click **Install / update and start monitoring**.
 
@@ -78,6 +80,7 @@ Open "RansomGuard" on the desktop and click **Install / update and start monitor
 ```
 RansomGuard.exe              Open the control panel
 RansomGuard.exe --install    Install / update background monitoring
+RansomGuard.exe --update     Open the control panel and update to the latest version
 RansomGuard.exe --restore    Restore the network and restart background monitoring
 RansomGuard.exe --dry-run    Test mode: log and show alerts only, never cut the network
 RansomGuard.exe --test-alert Preview the full-screen warning

@@ -57,7 +57,9 @@ Defender 有時會把 RansomGuard.exe 判定為威脅（例如 `Trojan:Win32/Bea
 
 ## 更新
 
-開啟桌面上的「RansomGuard」，按 **安裝／更新並開始監控**。程式會到 GitHub 檢查有沒有新版本，有的話自動下載、用 GitHub 公布的 SHA-256 確認檔案沒被竄改、安裝，再用新版本重新開啟控制台。沒有網路時則重新安裝目前的版本。控制台左上角會顯示目前的版本號。
+有新版本時 RansomGuard 會主動通知：背景監控在登入 2 分鐘後檢查一次，之後每 6 小時檢查一次；開啟控制台時也會檢查。按 **是** 就會自動更新（同一個版本在每次登入期間只會詢問一次）。
+
+要手動更新，開啟桌面上的「RansomGuard」，按 **安裝／更新並開始監控**。程式會到 GitHub 檢查有沒有新版本，有的話自動下載、用 GitHub 公布的 SHA-256 確認檔案沒被竄改、安裝，再用新版本重新開啟控制台。沒有網路時則重新安裝目前的版本。控制台左上角會顯示目前的版本號。
 
 > 1.4.0 以前的版本還不會自動更新：請到 [Releases](https://github.com/leo-code-del/RansomGuard/releases) 下載新版 `RansomGuard.exe`，執行後按 **安裝／更新並開始監控**，之後就能用按鈕更新。
 
@@ -78,6 +80,7 @@ Defender 有時會把 RansomGuard.exe 判定為威脅（例如 `Trojan:Win32/Bea
 ```
 RansomGuard.exe              開啟控制台
 RansomGuard.exe --install    安裝／更新背景監控
+RansomGuard.exe --update     開啟控制台並更新到最新版本
 RansomGuard.exe --restore    恢復網路，並重新開啟背景監控
 RansomGuard.exe --dry-run    測試模式：只記錄與跳窗，不會真的斷網
 RansomGuard.exe --test-alert 預覽全螢幕警告

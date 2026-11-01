@@ -614,6 +614,45 @@ class UpdateTests(TempDirTest):
         self.assertEqual(rg.INSTALL_EXE.read_bytes(), b"new")
 
 
+class UpdateNotificationTests(UpdateTests):
+    def test_check_for_update(self):
+        with mock.patch.object(rg, "FROZEN", True):
+            with self.serve(tag="v1.5.0"):
+                self.assertEqual(rg.check_for_update(), "1.5.0")
+            with self.serve(tag="v1.2.0"):
+                self.assertIsNone(rg.check_for_update())
+            with self.serve(api_error=OSError("offline")):
+                self.assertIsNone(rg.check_for_update())
+        with self.serve(tag="v1.5.0"):  # running from source: never offers the exe
+            self.assertIsNone(rg.check_for_update())
+
+    def run_watcher(self, versions, answer, seconds=1.0):
+        asked, launched = [], []
+        stop = threading.Event()
+        checks = iter(versions)
+        with mock.patch.object(rg, "UPDATE_CHECK_DELAY", 0), mock.patch.object(rg, "UPDATE_CHECK_INTERVAL", 0.05), \
+                mock.patch.object(rg, "check_for_update", lambda: next(checks, versions[-1])), \
+                mock.patch.object(rg, "ask_update", lambda v: asked.append(v) or answer), \
+                mock.patch.object(rg.subprocess, "Popen", lambda args, **kw: launched.append(args)):
+            t = threading.Thread(target=rg.update_watcher, args=(stop,))
+            t.start()
+            time.sleep(seconds)
+            stop.set()
+            t.join(5)
+        self.assertFalse(t.is_alive(), "update watcher did not stop")
+        return asked, launched
+
+    def test_watcher_asks_once_per_version(self):
+        asked, launched = self.run_watcher([None, "1.5.0", "1.5.0", "1.5.0", "1.6.0"], answer=False)
+        self.assertEqual(asked, ["1.5.0", "1.6.0"])
+        self.assertEqual(launched, [])
+
+    def test_watcher_opens_the_control_panel_to_update(self):
+        asked, launched = self.run_watcher(["1.5.0"], answer=True, seconds=0.3)
+        self.assertEqual(asked, ["1.5.0"])
+        self.assertEqual(launched, [[str(rg.INSTALL_EXE), "--update"]])
+
+
 # ---------------------------------------------------------------- process monitor (real WMI, harmless marker)
 class ProcessMonitorTests(unittest.TestCase):
     def test_new_process_is_seen(self):
