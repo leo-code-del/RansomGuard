@@ -18,14 +18,20 @@ RansomGuard — 偵測疑似勒索病毒的加密行為，觸發時自動切斷�
         （可選：HIBERNATE_ON_TRIGGER = True 會直接休眠，讓加密停下來）
 
 用法（Windows，正式模式需以系統管理員身分執行）：
-  python ransom_guard.py             正式監控
+  python ransom_guard.py             正式監控（打包成 .exe 後，不加參數會開啟控制台）
+  python ransom_guard.py --monitor   正式監控（排程工作用這個）
+  python ransom_guard.py --gui       控制台：安裝、恢復網路並重新開啟監控、預覽警告、解除安裝
   python ransom_guard.py --dry-run   測試模式：只記錄與跳窗，不會真的斷網
-  python ransom_guard.py --restore   把本程式停用的網路卡重新啟用
+  python ransom_guard.py --restore   恢復網路，並重新開啟背景監控
   python ransom_guard.py --test-alert  預覽全螢幕警告（不偵測、不斷網）
   python ransom_guard.py --watch D:\\資料 --watch E:\\備份   自訂監控資料夾
 
 需要套件：pip install watchdog
 紀錄檔位置：%LOCALAPPDATA%\\RansomGuard\\guard.log
+
+打包成單一執行檔（輸出 dist\\RansomGuard.exe）：
+  python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard ^
+         --distpath dist --workpath build --specpath build ransom_guard.py
 """
 
 import argparse
@@ -36,6 +42,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -47,6 +54,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 IS_WINDOWS = os.name == "nt"
+FROZEN = bool(getattr(sys, "frozen", False))  # 用 PyInstaller 打包成 .exe 執行中
+TASK_NAME = "RansomGuard"
+INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "RansomGuard"
+INSTALL_EXE = INSTALL_DIR / "RansomGuard.exe"
 
 # =============== 可調整的設定 ===============
 WINDOW_SEC = 30              # 統計時間窗（秒）
@@ -213,6 +224,97 @@ def is_admin() -> bool:
         return False
 
 
+_JOB = None
+_MUTEX = None
+
+
+def kill_with_me(proc):
+    """把子程序放進 Job Object：本程式結束（包括被強制終止）時子程序跟著結束，
+    不會留下一直在背景執行的孤兒 PowerShell。"""
+    global _JOB
+    if not IS_WINDOWS:
+        return
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = ctypes.c_void_p
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                            ctypes.c_void_p, ctypes.c_ulong]
+    k32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    if _JOB is None:
+        class BASIC(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", ctypes.c_uint32),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", ctypes.c_uint32),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", ctypes.c_uint32),
+                        ("SchedulingClass", ctypes.c_uint32)]
+
+        class EXTENDED(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BASIC),
+                        ("IoInfo", ctypes.c_uint64 * 6),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+        job = k32.CreateJobObjectW(None, None)
+        info = EXTENDED()
+        info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        # 9 = JobObjectExtendedLimitInformation
+        if not job or not k32.SetInformationJobObject(job, 9, ctypes.byref(info),
+                                                      ctypes.sizeof(info)):
+            log.warning("無法建立 Job Object（錯誤 %d）", ctypes.get_last_error())
+            return
+        _JOB = job
+    h = k32.OpenProcess(0x0100 | 0x0001, False, proc.pid)  # SET_QUOTA | TERMINATE
+    if not h or not k32.AssignProcessToJobObject(_JOB, h):
+        log.warning("無法把子程序 %s 放進 Job Object（錯誤 %d）", proc.pid, ctypes.get_last_error())
+    if h:
+        k32.CloseHandle(h)
+
+
+def exit_with_launcher():
+    """單一檔案的 .exe 其實是兩個程序：外層負責解壓縮，內層才是本程式。工作排程器停止
+    工作時只會結束外層，所以外層一結束這裡也跟著結束，避免監控變成停不掉的孤兒。"""
+    if not (IS_WINDOWS and FROZEN):
+        return
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+                                               ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong)]
+    k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    h = k32.OpenProcess(0x00100000 | 0x1000, False, os.getppid())  # SYNCHRONIZE | QUERY_LIMITED
+    if not h:
+        return
+    buf = ctypes.create_unicode_buffer(1024)
+    n = ctypes.c_ulong(len(buf))
+    if (not k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+            or norm(buf.value) != norm(sys.executable)):
+        k32.CloseHandle(h)  # 外層不是本程式（例如 onedir 打包），不必處理
+        return
+
+    def wait():
+        k32.WaitForSingleObject(h, 0xFFFFFFFF)
+        log.info("外層程序已結束，監控跟著結束")
+        os._exit(0)
+    threading.Thread(target=wait, daemon=True).start()
+
+
+def single_instance() -> bool:
+    """同一時間只允許一個正式監控；已經有一個在執行就回傳 False。"""
+    global _MUTEX
+    if not IS_WINDOWS:
+        return True
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    _MUTEX = k32.CreateMutexW(None, False, "Global\\RansomGuardMonitor")
+    return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
+
+
 def alert(title: str, msg: str):
     """跳出最上層警告視窗（不阻塞監控）。"""
     if not IS_WINDOWS:
@@ -248,7 +350,7 @@ $steps = @(
 if ($isTest) {
     $hint = '這是測試，按下方按鈕關閉即可。'
 } else {
-    $hint = "如果確認是誤判（例如是你自己動到誘餌檔）：關閉這個視窗後，雙擊 $($info.restore) 恢復網路。"
+    $hint = "如果確認是誤判（例如是你自己動到誘餌檔）：關閉這個視窗後，$($info.restore)。"
 }
 
 $script:ack = $false
@@ -370,7 +472,7 @@ def fullscreen_alert(reason: str, status: str, wait: bool = False):
             "status": status,
             "reason": reason if len(reason) <= 160 else reason[:157] + "...",
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "restore": str(Path(os.path.abspath(__file__)).parent / "恢復網路.bat"),
+            "restore": restore_hint(),
         }, ensure_ascii=False)
         script = ALERT_PS1.replace(
             "__INFO_B64__", base64.b64encode(info.encode("utf-8")).decode("ascii"))
@@ -703,6 +805,7 @@ class ProcessMonitor:
             ps_encoded_args(PROC_PS1, "-NonInteractive"),
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             creationflags=CREATE_NO_WINDOW)
+        kill_with_me(self.proc)
         threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
 
     def alive(self) -> bool:
@@ -841,37 +944,350 @@ def _ps_quote(s: str) -> str:
     return "'" + str(s).replace("'", "''") + "'"
 
 
-def restore_network():
+def network_cut(st: dict) -> bool:
+    return bool(st.get("triggered_at") or st.get("disabled_adapters") or st.get("firewall"))
+
+
+def restore_network(report=print) -> bool:
+    """恢復網路卡與防火牆設定、重設誘餌檔，再重新開啟背景監控。"""
     if IS_WINDOWS and not is_admin():
-        print("需要以系統管理員身分執行才能恢復網路（或直接雙擊 恢復網路.bat）。")
-        return
+        report("需要以系統管理員身分執行才能恢復網路。")
+        return False
     st = load_state()
+    if st.get("triggered_at"):
+        report(f"RansomGuard 在 {st['triggered_at']} 切斷了網路。")
+    installed = bool(task_state())
+    report("停止監控（避免重設誘餌檔時又觸發）...")
+    stop_monitor()
+
+    ok = True
     names = st.get("disabled_adapters") or []
     if names:
-        cmd = f"Enable-NetAdapter -Name @({','.join(_ps_quote(n) for n in names)}) -Confirm:$false"
+        report("重新啟用網路卡...")
+        # 一張一張啟用：其中一張不見了（例如拔掉的 USB 網卡）也不影響其他張
+        _, out, err = _ps(
+            f"$t = @(Get-NetAdapter -Name @({','.join(_ps_quote(n) for n in names)}) "
+            "-ErrorAction SilentlyContinue | Where-Object {$_.Status -eq 'Disabled'}); "
+            "foreach ($a in $t) { try { Enable-NetAdapter -Name $a.Name -Confirm:$false "
+            "-ErrorAction Stop; \"OK`t$($a.Name)\" } "
+            "catch { \"FAIL`t$($a.Name)`t$($_.Exception.Message)\" } }")
+        lines = [l.split("\t") for l in out.splitlines() if l.strip()]
+        for r in lines:
+            if r[0] == "OK":
+                log.info("已重新啟用網路卡：%s", r[1])
+                report(f"  已啟用 {r[1]}")
+            else:
+                ok = False
+                log.error("無法啟用網路卡 %s：%s", r[1], r[-1])
+                report(f"  無法啟用 {r[1]}：{r[-1]}")
+        if not lines:
+            report("  網路卡都已經是啟用狀態" + (f"（{err}）" if err else ""))
     else:
-        cmd = "Get-NetAdapter | Enable-NetAdapter -Confirm:$false"
-    rc, _, err = _ps(cmd)
-    ok = rc == 0
-    if ok:
-        log.info("已重新啟用網路卡：%s", ", ".join(names) or "全部")
-    else:
-        log.error("重新啟用失敗：%s", err)
-        print("重新啟用網路卡失敗：", err)
+        report("沒有被本程式停用的網路卡。")
     for p in st.get("firewall") or []:
         r = _ps(f"Set-NetFirewallProfile -Name {_ps_quote(p['Name'])} "
                 f"-Enabled {_ps_quote(p['Enabled'])} -DefaultInboundAction {_ps_quote(p['In'])} "
                 f"-DefaultOutboundAction {_ps_quote(p['Out'])}")
         if r[0] == 0:
             log.info("已還原防火牆設定：%s", p["Name"])
+            report(f"  已還原防火牆設定 {p['Name']}")
         else:
             ok = False
             log.error("還原防火牆設定失敗（%s）：%s", p["Name"], r[2])
-            print(f"還原防火牆設定失敗（{p['Name']}）：", r[2])
+            report(f"  還原防火牆設定失敗（{p['Name']}）：{r[2]}")
+    if network_cut(st):
+        time.sleep(3)
+        _run([sys_exe("ipconfig.exe"), "/renew"])
     if ok:
         save_state({})
-        _run([sys_exe("ipconfig.exe"), "/renew"])
-        print("網路已恢復。")
+    else:
+        report("部分設定沒有還原成功，請按 Win+R 輸入 ncpa.cpl 手動啟用網路卡。")
+
+    report("重設誘餌檔...")
+    remove_canaries()
+    if installed:
+        report("重新開啟監控...")
+        report("  監控已重新啟動" if start_monitor() else
+               "  監控沒有正常啟動，請按「安裝／更新並開始監控」，或查看紀錄檔")
+    else:
+        report("尚未安裝背景監控（排程工作），所以沒有重新開啟監控。")
+    up = adapters_up()
+    report(f"完成。目前連線中的網路卡：{up} 張" + (
+        "（Wi-Fi 可能需要幾秒鐘重新連線）" if up == "0" else ""))
+    return ok
+
+
+def remove_canaries():
+    """刪掉誘餌檔，監控重新啟動時會建立新的（避免誤判「程式沒執行時被改過」）。"""
+    for d in default_canary_dirs():
+        for name in CANARY_NAMES:
+            try:
+                (d / name).unlink(missing_ok=True)
+            except OSError as ex:
+                log.warning("無法刪除誘餌檔 %s：%s", d / name, ex)
+
+
+# ---------------- 背景監控（排程工作）與安裝 ----------------
+# 背景監控程序：.exe 或 ransom_guard.py 加 --monitor、舊版不加參數的 ransom_guard.py，
+# 以及它叫出來的程序監控 PowerShell（用編碼後的腳本內容辨認）
+_KILL_PS1 = r'''
+$me = @(__ME__, $PID)
+Get-CimInstance Win32_Process | Where-Object {
+    $c = "$($_.CommandLine)"
+    ($me -notcontains $_.ProcessId) -and (
+        ($_.Name -match '^(RansomGuard|pythonw?)\.exe$' -and $c -match 'ransom_?guard' -and
+         ($c -match '\s--monitor\b' -or $c -match 'ransom_guard\.py"?\s*$')) -or
+        $c.Contains('__PROC__'))
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+'''
+
+
+def task_state() -> str:
+    """排程工作狀態（Running / Ready / Disabled…）；尚未安裝回傳空字串。"""
+    try:
+        return _ps(f"(Get-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} "
+                   "-ErrorAction SilentlyContinue).State")[1]
+    except Exception:
+        return ""
+
+
+def stop_monitor():
+    _ps(f"Stop-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction SilentlyContinue")
+    proc_enc = ps_encoded_args(PROC_PS1)[-1][:200]
+    _ps(_KILL_PS1.replace("__ME__", f"{os.getpid()},{os.getppid()}")
+        .replace("__PROC__", proc_enc))
+    log.info("已停止背景監控")
+
+
+def start_monitor() -> bool:
+    _ps(f"Start-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction Stop")
+    time.sleep(5)  # 啟動失敗（例如缺套件）會在幾秒內結束
+    return task_state() == "Running"
+
+
+def launcher():
+    """(執行檔, 參數)：執行本程式的方式。"""
+    if FROZEN:
+        return str(INSTALL_EXE), ""
+    pyw = Path(sys.executable).with_name("pythonw.exe")
+    # -E 忽略 PYTHON* 環境變數、-P 不從程式所在資料夾載入模組（避免被放假的 json.py）
+    flags = "-E -P" if sys.version_info >= (3, 11) else "-E"
+    return str(pyw if pyw.exists() else sys.executable), f'{flags} "{os.path.abspath(__file__)}"'
+
+
+def desktop_lnk() -> Path:
+    return _known_folder("Desktop") / "RansomGuard.lnk"
+
+
+def restore_hint() -> str:
+    if desktop_lnk().exists():
+        return "開啟桌面上的「RansomGuard」，按「恢復網路並重新開啟監控」"
+    if FROZEN:
+        return f"執行 {sys.executable}，按「恢復網路並重新開啟監控」"
+    return f"雙擊 {Path(os.path.abspath(__file__)).parent / '恢復網路.bat'} 恢復網路"
+
+
+def install(report=print) -> bool:
+    """複製到 Program Files、建立登入時以最高權限執行的排程工作與桌面捷徑，然後開始監控。"""
+    report("停止舊的監控...")
+    stop_monitor()
+    if FROZEN and norm(sys.executable) != norm(INSTALL_EXE):
+        # 以系統管理員執行的程式放在只有管理員能改的資料夾，才不會被偷換
+        report(f"複製程式到 {INSTALL_DIR} ...")
+        INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+        for i in range(10):
+            try:
+                shutil.copy2(sys.executable, str(INSTALL_EXE))
+                break
+            except PermissionError:  # 舊的監控程序還沒完全結束
+                if i == 9:
+                    raise
+                time.sleep(1)
+    exe, args = launcher()
+    workdir = str(INSTALL_DIR if FROZEN else Path(os.path.abspath(__file__)).parent)
+    report("建立登入時自動執行的排程工作...")
+    rc, _, err = _ps(
+        r'$u = "$env:USERDOMAIN\$env:USERNAME"; '
+        f"$a = New-ScheduledTaskAction -Execute {_ps_quote(exe)} "
+        f"-Argument {_ps_quote((args + ' --monitor').strip())} -WorkingDirectory {_ps_quote(workdir)}; "
+        "$t = New-ScheduledTaskTrigger -AtLogOn -User $u; "
+        "$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; "
+        "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+        "-ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew "
+        "-RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); "
+        f"Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $a -Trigger $t "
+        f"-Principal $p -Settings $s -Description {_ps_quote('偵測勒索病毒行為並自動切斷網路')} "
+        "-Force -ErrorAction Stop | Out-Null")
+    if rc != 0:
+        raise RuntimeError(f"建立排程工作失敗：{err}")
+    report("建立桌面捷徑「RansomGuard」...")
+    _ps(f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({_ps_quote(str(desktop_lnk()))}); "
+        f"$s.TargetPath = {_ps_quote(exe)}; $s.Arguments = {_ps_quote((args + ' --gui').strip() if args else '')}; "
+        f"$s.WorkingDirectory = {_ps_quote(workdir)}; $s.Description = 'RansomGuard 控制台'; $s.Save()")
+    report("開始監控...")
+    ok = start_monitor()
+    log.info("已安裝背景監控：%s %s", exe, args)
+    report("完成！監控已在背景執行，之後每次登入 Windows 都會自動啟動。" if ok else
+           f"排程工作已建立，但監控目前狀態是 {task_state() or '未知'}，請查看紀錄檔。")
+    return ok
+
+
+def uninstall(report=print) -> bool:
+    report("停止監控...")
+    stop_monitor()
+    _, _, err = _ps(f"Unregister-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} "
+                     "-Confirm:$false -ErrorAction SilentlyContinue")
+    if task_state():
+        report(f"刪除排程工作失敗：{err}")
+        return False
+    report("已刪除排程工作")
+    desktop_lnk().unlink(missing_ok=True)
+    remove_canaries()
+    report("已刪除桌面捷徑與誘餌檔")
+    if INSTALL_EXE.exists():
+        if FROZEN and norm(sys.executable) == norm(INSTALL_EXE):
+            # 正在執行的檔案刪不掉：交給 Windows 在下次開機時刪除
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.MoveFileExW(str(INSTALL_EXE), None, 4)  # MOVEFILE_DELAY_UNTIL_REBOOT
+            k32.MoveFileExW(str(INSTALL_DIR), None, 4)
+            report(f"{INSTALL_EXE} 會在下次開機時刪除")
+        else:
+            try:
+                INSTALL_EXE.unlink()
+                INSTALL_DIR.rmdir()
+                report(f"已刪除 {INSTALL_DIR}")
+            except OSError as ex:
+                report(f"無法刪除 {INSTALL_DIR}：{ex}")
+    log.info("已解除安裝背景監控")
+    report("解除安裝完成。")
+    return True
+
+
+# ---------------- 控制台視窗 ----------------
+def status_text() -> str:
+    s = task_state()
+    mon = {"Running": "執行中", "Ready": "已停止", "Disabled": "已停用", "": "尚未安裝"}.get(s, s)
+    st = load_state()
+    if st.get("triggered_at"):
+        net = f"已在 {st['triggered_at']} 被切斷"
+    elif network_cut(st):
+        net = "已被切斷"
+    else:
+        net = "正常"
+    return f"背景監控：{mon}\n網路：{net}"
+
+
+def gui():
+    import queue
+    import tkinter as tk
+    from tkinter import messagebox, scrolledtext
+
+    if IS_WINDOWS and not is_admin():  # 以系統管理員身分重新開啟
+        script = [] if FROZEN else [os.path.abspath(__file__)]
+        params = subprocess.list2cmdline([*script, *sys.argv[1:]])
+        if ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1) > 32:
+            return
+        messagebox.showerror("RansomGuard", "需要系統管理員權限才能使用控制台。")
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # 高解析度螢幕上字才不會糊
+    except Exception:
+        pass
+
+    root = tk.Tk()
+    root.title("RansomGuard 控制台")
+    root.resizable(False, False)
+    font = ("Microsoft JhengHei UI", 11)
+    status = tk.StringVar(value="讀取狀態中...")
+    tk.Label(root, textvariable=status, font=(font[0], 13, "bold"), justify="left",
+             anchor="w").pack(fill="x", padx=16, pady=(14, 8))
+
+    q = queue.Queue()
+    buttons = []
+
+    def report(msg):
+        q.put(("msg", msg))
+
+    def refresh():
+        threading.Thread(target=lambda: q.put(("status", status_text())), daemon=True).start()
+
+    def run_bg(fn):
+        for b in buttons:
+            b.config(state="disabled")
+        out.delete("1.0", "end")
+
+        def work():
+            try:
+                fn(report)
+            except Exception as ex:
+                log.exception("控制台操作失敗")
+                report(f"[失敗] {ex}")
+            q.put(("done", None))
+        threading.Thread(target=work, daemon=True).start()
+
+    def pump():
+        try:
+            while True:
+                kind, msg = q.get_nowait()
+                if kind == "msg":
+                    out.insert("end", msg + "\n")
+                    out.see("end")
+                elif kind == "status":
+                    status.set(msg)
+                else:
+                    for b in buttons:
+                        b.config(state="normal")
+                    refresh()
+        except queue.Empty:
+            pass
+        root.after(100, pump)
+
+    def on_restore():
+        if network_cut(load_state()) and not messagebox.askyesno(
+                "恢復網路", "請先確認這次是測試或誤判，而不是真的中了勒索病毒。\n\n確定要恢復網路嗎？",
+                icon="warning"):
+            return
+        run_bg(restore_network)
+
+    def on_stop():
+        if messagebox.askyesno("停止監控", "停止後電腦就沒有勒索病毒防護，直到重新開啟監控或下次登入。\n確定要停止嗎？"):
+            run_bg(lambda rep: (stop_monitor(), rep("監控已停止。")))
+
+    def on_uninstall():
+        if network_cut(load_state()):
+            messagebox.showinfo("解除安裝", "網路目前被切斷，請先按「恢復網路並重新開啟監控」。")
+            return
+        if messagebox.askyesno("解除安裝", "確定要移除背景監控、桌面捷徑與誘餌檔嗎？"):
+            run_bg(uninstall)
+
+    def on_preview():
+        run_bg(lambda rep: (rep("警告畫面開啟中，按「我知道了」即可關閉。"),
+                            fullscreen_alert("這是警告畫面的預覽，沒有偵測到任何東西", "test")))
+
+    def on_log():
+        p = app_dir() / "guard.log"
+        if p.exists():
+            os.startfile(p)
+        else:
+            messagebox.showinfo("紀錄檔", "還沒有紀錄檔。")
+
+    frame = tk.Frame(root)
+    frame.pack(padx=16, fill="x")
+    for i, (text, cmd) in enumerate([
+            ("安裝／更新並開始監控", lambda: run_bg(install)),
+            ("恢復網路並重新開啟監控", on_restore),
+            ("停止監控", on_stop),
+            ("預覽警告畫面", on_preview),
+            ("開啟紀錄檔", on_log),
+            ("解除安裝", on_uninstall)]):
+        b = tk.Button(frame, text=text, command=cmd, font=font, width=22, pady=4)
+        b.grid(row=i // 2, column=i % 2, padx=4, pady=4, sticky="ew")
+        buttons.append(b)
+    out = scrolledtext.ScrolledText(root, width=58, height=12, font=("Microsoft JhengHei UI", 10))
+    out.pack(fill="x", padx=20, pady=(8, 16))
+    refresh()
+    pump()
+    root.mainloop()
 
 
 # ---------------- 主程式 ----------------
@@ -891,6 +1307,7 @@ def respond(reason: str, dry_run: bool):
 
 
 def run(args):
+    exit_with_launcher()
     try:
         from watchdog.observers import Observer
     except ImportError:
@@ -904,12 +1321,15 @@ def run(args):
         log.error(msg)
         alert("RansomGuard 無法啟動", msg)
         sys.exit(1)
+    if not args.dry_run and not single_instance():
+        log.info("已經有監控在執行，這次不再啟動")
+        sys.exit(0)
 
     st = load_state()
     if st.get("triggered_at"):
         alert("RansomGuard 提醒",
               f"上次在 {st['triggered_at']} 偵測到疑似勒索病毒並切斷了網路。\n"
-              "確認電腦安全後，再執行 --restore 恢復網路。")
+              f"確認電腦安全後，{restore_hint()}。")
 
     watch_dirs = [Path(p) for p in args.watch] if args.watch else default_watch_dirs()
     watch_dirs = [d for d in watch_dirs if d.is_dir()]
@@ -980,8 +1400,10 @@ def run(args):
 def main():
     fix_console_encoding()
     ap = argparse.ArgumentParser(description="偵測勒索病毒行為並自動斷網")
+    ap.add_argument("--monitor", action="store_true", help="開始監控（.exe 不加參數會開啟控制台）")
+    ap.add_argument("--gui", action="store_true", help="開啟控制台")
     ap.add_argument("--dry-run", action="store_true", help="測試模式，不會真的斷網")
-    ap.add_argument("--restore", action="store_true", help="重新啟用被本程式停用的網路卡")
+    ap.add_argument("--restore", action="store_true", help="恢復網路，並重新開啟背景監控")
     ap.add_argument("--watch", action="append", metavar="DIR", help="自訂監控資料夾（可重複）")
     ap.add_argument("--test-alert", action="store_true", help="只顯示全螢幕警告看看樣子，不偵測也不斷網")
     args = ap.parse_args()
@@ -990,6 +1412,8 @@ def main():
         fullscreen_alert("這是警告畫面的預覽（--test-alert），沒有偵測到任何東西", "test", wait=True)
     elif args.restore:
         restore_network()
+    elif args.gui or (FROZEN and not (args.monitor or args.dry_run or args.watch)):
+        gui()
     else:
         run(args)
 
