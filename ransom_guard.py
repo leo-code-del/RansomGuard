@@ -33,6 +33,9 @@ RansomGuard — 偵測疑似勒索病毒的加密行為，觸發時自動切斷�
 打包成單一執行檔（輸出 dist\\RansomGuard.exe）：
   python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard ^
          --distpath dist --workpath build --specpath build ransom_guard.py
+
+下載與更新：https://github.com/leo-code-del/copy/releases
+  下載新版 RansomGuard.exe → 執行 → 按「安裝／更新並開始監控」
 """
 
 import argparse
@@ -54,6 +57,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+VERSION = "1.0.0"  # 發布新版時改這裡，並在 GitHub 建立對應的 Release（v1.0.0）
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # 用 PyInstaller 打包成 .exe 執行中
 TASK_NAME = "RansomGuard"
@@ -1165,17 +1169,21 @@ def uninstall(report=print) -> bool:
 
 
 # ---------------- 控制台視窗 ----------------
-def status_text() -> str:
+def status_info():
+    """控制台的兩張狀態卡：((文字, 燈號, 說明), (文字, 燈號, 說明))，燈號是 ok / warn / bad / off。"""
     s = task_state()
-    mon = {"Running": "執行中", "Ready": "已停止", "Disabled": "已停用", "": "尚未安裝"}.get(s, s)
+    mon = {"Running": ("執行中", "ok", "每次登入 Windows 都會自動啟動"),
+           "Ready": ("已停止", "warn", "目前沒有勒索病毒防護"),
+           "Disabled": ("已停用", "warn", "目前沒有勒索病毒防護"),
+           "": ("尚未安裝", "off", "按「安裝／更新並開始監控」")}.get(s, (s, "warn", ""))
     st = load_state()
     if st.get("triggered_at"):
-        net = f"已在 {st['triggered_at']} 被切斷"
+        net = ("已切斷", "bad", f"{st['triggered_at']} 偵測到可疑行為")
     elif network_cut(st):
-        net = "已被切斷"
+        net = ("已切斷", "bad", "確認安全後再恢復網路")
     else:
-        net = "正常"
-    return f"背景監控：{mon}\n網路：{net}"
+        net = ("正常", "ok", "連線沒有被限制")
+    return mon, net
 
 
 def gui():
@@ -1198,24 +1206,125 @@ def gui():
     root = tk.Tk()
     root.title("RansomGuard 控制台")
     root.resizable(False, False)
-    font = ("Microsoft JhengHei UI", 11)
-    status = tk.StringVar(value="讀取狀態中...")
-    tk.Label(root, textvariable=status, font=(font[0], 13, "bold"), justify="left",
-             anchor="w").pack(fill="x", padx=16, pady=(14, 8))
+    scale = root.winfo_fpixels("1i") / 96  # 間距跟著螢幕縮放比例放大
+
+    def px(n):
+        return int(n * scale)
+
+    FONT = "Microsoft JhengHei UI"
+    C = {"bg": "#f3f5f9", "card": "#ffffff", "border": "#dfe3eb", "header": "#1e293b",
+         "text": "#1f2937", "muted": "#6b7280",
+         "ok": "#16a34a", "warn": "#d97706", "bad": "#dc2626", "off": "#9ca3af"}
+    # 按鈕樣式：(底色, 滑鼠移上去的底色, 字色, 停用時字色)
+    STYLES = {"primary": ("#2563eb", "#1d4ed8", "#ffffff", "#bfd0f7"),
+              "success": ("#16a34a", "#15803d", "#ffffff", "#bde5cb"),
+              "secondary": ("#ffffff", "#eef1f6", C["text"], "#c3c9d4"),
+              "danger": (C["bg"], "#fde8e8", C["bad"], "#e8b4b4")}
+    root.configure(bg=C["bg"])
 
     q = queue.Queue()
     buttons = []
+
+    def make_button(parent, text, cmd, name):
+        rim = tk.Frame(parent)  # 1px 外框（tk 按鈕本身的框線在 Windows 上只能是黑色）
+        b = tk.Button(rim, text=text, command=cmd, font=(FONT, 11), relief="flat", bd=0,
+                      highlightthickness=0, cursor="hand2", padx=px(12), pady=px(7))
+        b.pack(fill="both", padx=1, pady=1)
+        buttons.append(b)
+        style(b, name)
+        return rim, b
+
+    def style(b, name):
+        bg, hover, fg, dim = STYLES[name]
+        rim = b.master
+        edge = C["border"] if name == "secondary" else bg
+        rim.config(bg=edge)
+        b.config(bg=bg, fg=fg, activebackground=hover, activeforeground=fg, disabledforeground=dim)
+
+        def enter(_):
+            if str(b["state"]) == "normal":
+                b.config(bg=hover)
+                rim.config(bg=C["border"] if name == "secondary" else hover)
+
+        def leave(_):
+            b.config(bg=bg)
+            rim.config(bg=edge)
+        b.bind("<Enter>", enter)
+        b.bind("<Leave>", leave)
+
+    # 標題列
+    hdr = tk.Frame(root, bg=C["header"])
+    hdr.pack(fill="x")
+    top = tk.Frame(hdr, bg=C["header"])
+    top.pack(fill="x", padx=px(22), pady=(px(16), 0))
+    tk.Label(top, text="RansomGuard", font=(FONT, 17, "bold"), fg="#ffffff",
+             bg=C["header"]).pack(side="left")
+    tk.Label(top, text=f"v{VERSION}", font=(FONT, 10), fg="#94a3b8",
+             bg=C["header"]).pack(side="left", anchor="s", padx=(px(8), 0), pady=(0, px(4)))
+    tk.Label(hdr, text="偵測勒索病毒行為，發現異常時自動切斷網路", font=(FONT, 10), fg="#cbd5e1",
+             bg=C["header"]).pack(anchor="w", padx=px(22), pady=(px(2), px(16)))
+
+    body = tk.Frame(root, bg=C["bg"])
+    body.pack(fill="both", padx=px(22), pady=(px(18), px(16)))
+
+    # 狀態卡
+    cards = tk.Frame(body, bg=C["bg"])
+    cards.pack(fill="x")
+    cards.columnconfigure((0, 1), weight=1, uniform="card")
+
+    def card(col, title):
+        f = tk.Frame(cards, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
+        f.grid(row=0, column=col, sticky="nsew", padx=(0, px(6)) if col == 0 else (px(6), 0))
+        tk.Label(f, text=title, font=(FONT, 10), fg=C["muted"],
+                 bg=C["card"]).pack(anchor="w", padx=px(16), pady=(px(12), 0))
+        row = tk.Frame(f, bg=C["card"])
+        row.pack(anchor="w", padx=px(16))
+        dot = tk.Label(row, text="●", font=(FONT, 12), fg=C["off"], bg=C["card"])
+        dot.pack(side="left")
+        val = tk.Label(row, text="讀取中...", font=(FONT, 15, "bold"), fg=C["text"], bg=C["card"])
+        val.pack(side="left", padx=(px(4), 0))
+        detail = tk.Label(f, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"],
+                          justify="left", wraplength=px(230))
+        detail.pack(anchor="w", padx=px(16), pady=(0, px(12)))
+        return dot, val, detail
+
+    mon_card = card(0, "背景監控")
+    net_card = card(1, "網路")
+
+    def show_status(info):
+        for (dot, val, detail), (text, level, note) in zip((mon_card, net_card), info):
+            dot.config(fg=C[level])
+            val.config(text=text, fg=C["bad"] if level == "bad" else C["text"])
+            detail.config(text=note or " ")
+        cut = info[1][1] == "bad"  # 斷網時改成強調「恢復網路」
+        style(install_btn, "secondary" if cut else "primary")
+        style(restore_btn, "success" if cut else "secondary")
+
+    def section(title):
+        row = tk.Frame(body, bg=C["bg"])
+        row.pack(fill="x", pady=(px(18), px(6)))
+        tk.Label(row, text=title, font=(FONT, 10, "bold"), fg=C["muted"], bg=C["bg"]).pack(side="left")
+        return row
+
+    def write(msg, tag=None):
+        out.config(state="normal")
+        out.insert("end", msg + "\n", tag)
+        out.see("end")
+        out.config(state="disabled")
 
     def report(msg):
         q.put(("msg", msg))
 
     def refresh():
-        threading.Thread(target=lambda: q.put(("status", status_text())), daemon=True).start()
+        threading.Thread(target=lambda: q.put(("status", status_info())), daemon=True).start()
 
     def run_bg(fn):
         for b in buttons:
             b.config(state="disabled")
+        busy.config(text="執行中...")
+        out.config(state="normal")
         out.delete("1.0", "end")
+        out.config(state="disabled")
 
         def work():
             try:
@@ -1231,13 +1340,13 @@ def gui():
             while True:
                 kind, msg = q.get_nowait()
                 if kind == "msg":
-                    out.insert("end", msg + "\n")
-                    out.see("end")
+                    write(msg, "err" if msg.startswith("[失敗]") else None)
                 elif kind == "status":
-                    status.set(msg)
+                    show_status(msg)
                 else:
                     for b in buttons:
                         b.config(state="normal")
+                    busy.config(text="")
                     refresh()
         except queue.Empty:
             pass
@@ -1272,22 +1381,45 @@ def gui():
         else:
             messagebox.showinfo("紀錄檔", "還沒有紀錄檔。")
 
-    frame = tk.Frame(root)
-    frame.pack(padx=16, fill="x")
-    for i, (text, cmd) in enumerate([
-            ("安裝／更新並開始監控", lambda: run_bg(install)),
-            ("恢復網路並重新開啟監控", on_restore),
-            ("停止監控", on_stop),
-            ("預覽警告畫面", on_preview),
-            ("開啟紀錄檔", on_log),
-            ("解除安裝", on_uninstall)]):
-        b = tk.Button(frame, text=text, command=cmd, font=font, width=22, pady=4)
-        b.grid(row=i // 2, column=i % 2, padx=4, pady=4, sticky="ew")
-        buttons.append(b)
-    out = scrolledtext.ScrolledText(root, width=58, height=12, font=("Microsoft JhengHei UI", 10))
-    out.pack(fill="x", padx=20, pady=(8, 16))
+    # 操作按鈕
+    section("操作")
+    acts = tk.Frame(body, bg=C["bg"])
+    acts.pack(fill="x")
+    acts.columnconfigure((0, 1), weight=1, uniform="btn")
+    rim, install_btn = make_button(acts, "安裝／更新並開始監控", lambda: run_bg(install), "primary")
+    install_btn.config(font=(FONT, 12, "bold"), pady=px(9))
+    rim.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(8)))
+    for i, (text, cmd) in enumerate([("恢復網路並重新開啟監控", on_restore), ("停止監控", on_stop),
+                                     ("預覽警告畫面", on_preview), ("開啟紀錄檔", on_log)]):
+        rim, b = make_button(acts, text, cmd, "secondary")
+        rim.grid(row=1 + i // 2, column=i % 2, sticky="ew", pady=(0, px(8)),
+                 padx=(0, px(4)) if i % 2 == 0 else (px(4), 0))
+        if i == 0:
+            restore_btn = b
+
+    # 執行紀錄
+    busy = tk.Label(section("執行紀錄"), text="", font=(FONT, 10), fg=C["ok"], bg=C["bg"])
+    busy.pack(side="right")
+    out = scrolledtext.ScrolledText(body, width=60, height=9, font=(FONT, 10), wrap="word",
+                                    relief="flat", bd=0, bg=C["card"], fg=C["text"],
+                                    highlightthickness=1, highlightbackground=C["border"],
+                                    highlightcolor=C["border"], padx=px(10), pady=px(8))
+    out.pack(fill="x")
+    out.tag_config("hint", foreground=C["muted"])
+    out.tag_config("err", foreground=C["bad"])
+    write("按上方按鈕執行操作，進度會顯示在這裡。", "hint")
+
+    foot = tk.Frame(body, bg=C["bg"])
+    foot.pack(fill="x", pady=(px(10), 0))
+    rim, b = make_button(foot, "解除安裝", on_uninstall, "danger")
+    b.config(font=(FONT, 10), padx=px(10), pady=px(4))
+    rim.pack(side="right")
+
     refresh()
     pump()
+    root.update_idletasks()  # 視窗置中偏上
+    root.geometry(f"+{(root.winfo_screenwidth() - root.winfo_width()) // 2}"
+                  f"+{(root.winfo_screenheight() - root.winfo_height()) // 3}")
     root.mainloop()
 
 
@@ -1369,7 +1501,7 @@ def run(args):
         procmon.start()
     restarts = 0
 
-    log.info("開始監控%s：%s", "（測試模式）" if args.dry_run else "",
+    log.info("RansomGuard %s 開始監控%s：%s", VERSION, "（測試模式）" if args.dry_run else "",
              "; ".join(str(d) for d in watch_dirs))
     log.info("誘餌檔：%s", "; ".join(str(p) for p in canaries))
     try:
@@ -1401,6 +1533,7 @@ def run(args):
 def main():
     fix_console_encoding()
     ap = argparse.ArgumentParser(description="偵測勒索病毒行為並自動斷網")
+    ap.add_argument("--version", action="version", version=f"RansomGuard {VERSION}")
     ap.add_argument("--monitor", action="store_true", help="開始監控（.exe 不加參數會開啟控制台）")
     ap.add_argument("--gui", action="store_true", help="開啟控制台")
     ap.add_argument("--dry-run", action="store_true", help="測試模式，不會真的斷網")
