@@ -23,6 +23,7 @@ RansomGuard — 偵測疑似勒索病毒的加密行為，觸發時自動切斷�
   python ransom_guard.py --gui       控制台：安裝、恢復網路並重新開啟監控、預覽警告、解除安裝
   python ransom_guard.py --dry-run   測試模式：只記錄與跳窗，不會真的斷網
   python ransom_guard.py --restore   恢復網路，並重新開啟背景監控
+  python ransom_guard.py --install   安裝／更新背景監控（.exe 會複製到 Program Files）
   python ransom_guard.py --test-alert  預覽全螢幕警告（不偵測、不斷網）
   python ransom_guard.py --watch D:\\資料 --watch E:\\備份   自訂監控資料夾
 
@@ -1404,6 +1405,7 @@ def main():
     ap.add_argument("--gui", action="store_true", help="開啟控制台")
     ap.add_argument("--dry-run", action="store_true", help="測試模式，不會真的斷網")
     ap.add_argument("--restore", action="store_true", help="恢復網路，並重新開啟背景監控")
+    ap.add_argument("--install", action="store_true", help="安裝／更新背景監控並開始監控")
     ap.add_argument("--watch", action="append", metavar="DIR", help="自訂監控資料夾（可重複）")
     ap.add_argument("--test-alert", action="store_true", help="只顯示全螢幕警告看看樣子，不偵測也不斷網")
     args = ap.parse_args()
@@ -1411,7 +1413,17 @@ def main():
     if args.test_alert:
         fullscreen_alert("這是警告畫面的預覽（--test-alert），沒有偵測到任何東西", "test", wait=True)
     elif args.restore:
-        restore_network()
+        restore_network(log.info)
+    elif args.install:
+        if IS_WINDOWS and not is_admin():
+            log.error("需要以系統管理員身分執行才能安裝")
+            sys.exit(1)
+        try:
+            ok = install(log.info)
+        except Exception:
+            log.exception("安裝失敗")
+            ok = False
+        sys.exit(0 if ok else 1)
     elif args.gui or (FROZEN and not (args.monitor or args.dry_run or args.watch)):
         gui()
     else:
