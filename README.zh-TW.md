@@ -21,6 +21,15 @@
 
 安裝後程式會複製到 `C:\Program Files\RansomGuard`，每次登入 Windows 都會在背景自動啟動，桌面也會出現「RansomGuard」捷徑可以開啟控制台。
 
+### 如果被 Windows Defender 刪除
+
+Defender 有時會把 RansomGuard.exe 判定為威脅（例如 `Trojan:Win32/Bearfoos!ml`）。`!ml` 代表機器學習的推測，不是已知病毒：用 PyInstaller 打包、需要系統管理員權限、會終止程序和停用網路卡的程式，在它看來很可疑。這時 Defender 會連同已安裝的程式和排程工作一起刪除，**防護會在沒有任何提示下停止**，請偶爾確認控制台顯示「執行中」。
+
+1. 先比對檔案的 SHA-256 和[版本頁面](https://github.com/leo-code-del/RansomGuard/releases) Assets 底下顯示的是否相同（PowerShell：`Get-FileHash RansomGuard.exe`），相同才繼續。
+2. Windows 安全性 → 病毒與威脅防護 → 保護歷程記錄 → 選擇該項目 → **還原**（或 **允許在裝置上**）。
+3. 再執行一次 RansomGuard.exe，按 **安裝／更新並開始監控**。
+4. 請到 <https://www.microsoft.com/wdsi/filesubmission> 回報誤判（選「Incorrectly detected」），Microsoft 確認後所有人都不會再被誤判。
+
 ## 偵測方式
 
 以下任一情況成立就會觸發：

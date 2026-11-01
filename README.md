@@ -21,6 +21,15 @@ Detects ransomware encryption behavior and **cuts off the network automatically*
 
 The program copies itself to `C:\Program Files\RansomGuard` and starts in the background every time you sign in to Windows. A "RansomGuard" shortcut on the desktop opens the control panel.
 
+### If Windows Defender removes it
+
+Defender sometimes reports RansomGuard.exe as a threat (for example `Trojan:Win32/Bearfoos!ml`). The `!ml` means a machine-learning guess, not a known virus: programs packaged with PyInstaller that need administrator rights, stop processes and disable network adapters look suspicious to it. When that happens Defender also deletes the installed copy and its scheduled task, so **protection stops without any message**. Check now and then that the control panel shows "Running".
+
+1. Compare the file's SHA-256 with the one shown under Assets on the [release page](https://github.com/leo-code-del/RansomGuard/releases) (PowerShell: `Get-FileHash RansomGuard.exe`). Only continue if they match.
+2. Windows Security → Virus & threat protection → Protection history → select the item → **Restore** (or **Allow on device**).
+3. Run RansomGuard.exe again and click **Install / update and start monitoring**.
+4. Please report the false positive to Microsoft at <https://www.microsoft.com/wdsi/filesubmission> (choose "Incorrectly detected"), which clears it for everyone.
+
 ## What it detects
 
 Any one of these triggers it:
