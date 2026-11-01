@@ -10,7 +10,7 @@ Detects ransomware encryption behavior and **cuts off the network automatically*
 
 [All versions and release notes](https://github.com/leo-code-del/RansomGuard/releases)
 
-> The interface is available in English and 中文(繁體) (Traditional Chinese). It follows your Windows display language (Chinese → 中文(繁體), anything else → English). Switch it any time with the **English / 中文(繁體)** button in the top-right corner of the control panel; the background monitor's warnings use the same language.
+> The interface is available in English and 中文(繁體) (Traditional Chinese). The first time you open it, you choose the language (English or 中文(繁體)). Switch it any time with the **English / 中文(繁體)** button in the top-right corner of the control panel; the background monitor's warnings use the same language.
 
 ## Install
 
@@ -48,13 +48,15 @@ Watched folders: Desktop, Documents, Pictures, Downloads, Videos, Music.
 
 ## Update
 
-Download the new `RansomGuard.exe` from [Releases](https://github.com/leo-code-del/RansomGuard/releases), run it and click **Install / update and start monitoring**. It replaces the old version. The current version number is shown in the top-left corner of the control panel.
+Open "RansomGuard" on the desktop and click **Install / update and start monitoring**. It checks GitHub for a newer release, downloads it, verifies it against the SHA-256 that GitHub publishes, installs it and reopens the control panel with the new version. Without an internet connection it simply reinstalls the current version. The current version number is shown in the top-left corner of the control panel.
+
+> Versions before 1.4.0 can't update themselves: download the new `RansomGuard.exe` from [Releases](https://github.com/leo-code-del/RansomGuard/releases) once, run it and click **Install / update and start monitoring**.
 
 ## Control panel
 
 | Button | What it does |
 | --- | --- |
-| Install / update and start monitoring | Installs or updates background monitoring and starts it |
+| Install / update and start monitoring | Updates to the latest release from GitHub, installs background monitoring and starts it |
 | Restore network and restart monitoring | Restores the network after a false alarm |
 | Stop monitoring | Stops it for now; it starts again at next sign-in |
 | Preview warning | Shows what the warning looks like, without cutting the network |

@@ -60,12 +60,14 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.3.0"  # bump this for a new release and create the matching GitHub Release (v1.3.0)
+VERSION = "1.4.0"  # bump this for a new release and create the matching GitHub Release (v1.4.0)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
 INSTALL_DIR = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "RansomGuard"
 INSTALL_EXE = INSTALL_DIR / "RansomGuard.exe"
+UPDATE_API = "https://api.github.com/repos/leo-code-del/RansomGuard/releases/latest"
+UPDATED_TO = None  # version install() just downloaded from GitHub, if any
 
 # =============== Settings you can tune ===============
 WINDOW_SEC = 30              # counting window (seconds)
@@ -1197,23 +1199,83 @@ def restore_hint() -> str:
     return tr(f"雙擊 {bat} 恢復網路", f"double-click {bat} to restore the network")
 
 
+def version_tuple(v: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+
+def replace_install_exe(write):
+    """Put a new INSTALL_EXE in place with write(). A running exe can't be overwritten but can be
+    renamed, so the old one is moved aside first (and put back if writing fails)."""
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    old = None
+    if INSTALL_EXE.exists():
+        old = INSTALL_DIR / f"RansomGuard.old-{uuid.uuid4().hex[:8]}.exe"
+        os.replace(INSTALL_EXE, old)
+    try:
+        write()
+    except Exception:
+        if old is not None:
+            os.replace(old, INSTALL_EXE)
+        raise
+    if old is not None:
+        try:
+            old.unlink()
+        except OSError:  # still running (e.g. this control panel): Windows deletes it at the next restart
+            ctypes.WinDLL("kernel32").MoveFileExW(str(old), None, 4)  # MOVEFILE_DELAY_UNTIL_REBOOT
+
+
+def fetch_update(report):
+    """If GitHub has a newer release, download it, check its SHA-256 against the one GitHub publishes
+    and install it as INSTALL_EXE. Returns the new version, or None (already latest / check failed)."""
+    import hashlib
+    import urllib.request
+
+    report(tr("檢查新版本...", "Checking for a new version..."))
+    try:
+        req = urllib.request.Request(UPDATE_API, headers={"User-Agent": "RansomGuard",
+                                                          "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            rel = json.load(r)
+        latest = rel["tag_name"].lstrip("v")
+        if version_tuple(latest) <= version_tuple(VERSION):
+            report(tr(f"  已經是最新版本（v{VERSION}）", f"  Already the latest version (v{VERSION})"))
+            return None
+        asset = next((a for a in rel["assets"] if a["name"] == "RansomGuard.exe"), None)
+        if asset is None:
+            raise RuntimeError(tr("新版本沒有附上 RansomGuard.exe", "the new release has no RansomGuard.exe"))
+        algo, _, want = (asset.get("digest") or "").partition(":")
+        url = asset["browser_download_url"]
+        if algo != "sha256" or not want or not url.startswith("https://github.com/"):
+            raise RuntimeError(tr("GitHub 沒有提供可核對的 SHA-256", "GitHub gave no SHA-256 to check the file against"))
+        report(tr(f"下載 v{latest}（{asset['size'] / 1048576:.1f} MB）...",
+                  f"Downloading v{latest} ({asset['size'] / 1048576:.1f} MB)..."))
+        # kept in memory until verified, so nothing can swap a temp file between the check and the install
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "RansomGuard"}),
+                                    timeout=120) as r:
+            data = r.read()
+        if hashlib.sha256(data).hexdigest() != want.lower():
+            raise RuntimeError(tr("下載的檔案和 GitHub 公布的 SHA-256 不符", "the download doesn't match GitHub's SHA-256"))
+    except Exception as ex:
+        log.warning(tr("無法更新：%s", "Could not update: %s"), ex)
+        report(tr(f"  無法更新：{ex}（改為安裝目前這個版本）", f"  Could not update: {ex} (installing this version instead)"))
+        return None
+    replace_install_exe(lambda: INSTALL_EXE.write_bytes(data))
+    log.info(tr("已從 GitHub 更新到 v%s", "Updated from GitHub to v%s"), latest)
+    report(tr(f"  已更新到 v{latest}", f"  Updated to v{latest}"))
+    return latest
+
+
 def install(report=print) -> bool:
-    """Copy to Program Files, create a scheduled task that runs elevated at sign-in and a desktop
-    shortcut, then start monitoring."""
+    """Update from GitHub if there is a newer release (otherwise copy this exe) into Program Files,
+    create a scheduled task that runs elevated at sign-in and a desktop shortcut, then start monitoring."""
+    global UPDATED_TO
     report(tr("停止舊的監控...", "Stopping the old monitor..."))
     stop_monitor()
-    if FROZEN and norm(sys.executable) != norm(INSTALL_EXE):
+    UPDATED_TO = fetch_update(report) if FROZEN else None
+    if FROZEN and UPDATED_TO is None and norm(sys.executable) != norm(INSTALL_EXE):
         # a program that runs as administrator must live in a folder only administrators can change
         report(tr(f"複製程式到 {INSTALL_DIR} ...", f"Copying the program to {INSTALL_DIR} ..."))
-        INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-        for i in range(10):
-            try:
-                shutil.copy2(sys.executable, str(INSTALL_EXE))
-                break
-            except PermissionError:  # the old monitor hasn't fully exited yet
-                if i == 9:
-                    raise
-                time.sleep(1)
+        replace_install_exe(lambda: shutil.copy2(sys.executable, str(INSTALL_EXE)))
     exe, args = launcher()
     workdir = str(INSTALL_DIR if FROZEN else Path(os.path.abspath(__file__)).parent)
     report(tr("建立登入時自動執行的排程工作...", "Creating a scheduled task that runs at sign-in..."))
@@ -1427,6 +1489,13 @@ def gui():
                     for b in buttons:
                         b.config(state="normal")
                     w["busy"].config(text="")
+                    if UPDATED_TO:  # reopen the control panel from the newly installed version
+                        messagebox.showinfo("RansomGuard", tr(f"已更新到 v{UPDATED_TO}，控制台會用新版本重新開啟。",
+                                                              f"Updated to v{UPDATED_TO}. The control panel "
+                                                              "will reopen with the new version."))
+                        subprocess.Popen([str(INSTALL_EXE), "--gui"], cwd=str(INSTALL_DIR))
+                        root.destroy()
+                        return
                     refresh()
         except queue.Empty:
             pass
@@ -1479,6 +1548,48 @@ def gui():
         set_lang("en" if LANG == "zh" else "zh")
         build()
         refresh()
+
+    def center():
+        root.update_idletasks()  # center the window, slightly above the middle
+        root.geometry(f"+{(root.winfo_screenwidth() - root.winfo_width()) // 2}"
+                      f"+{(root.winfo_screenheight() - root.winfo_height()) // 3}")
+
+    def choose_lang():
+        """First run: let the user pick the language (English first, then 中文(繁體))."""
+        w["font"] = "Segoe UI"
+        root.title("RansomGuard")
+        w["frame"] = frame = tk.Frame(root, bg=C["bg"])
+        frame.pack(fill="both")
+        hdr = tk.Frame(frame, bg=C["header"])
+        hdr.pack(fill="x")
+        top = tk.Frame(hdr, bg=C["header"])
+        top.pack(fill="x", padx=px(22), pady=px(16))
+        tk.Label(top, text="RansomGuard", font=("Segoe UI", 17, "bold"), fg="#ffffff",
+                 bg=C["header"]).pack(side="left")
+        tk.Label(top, text=f"v{VERSION}", font=("Segoe UI", 10), fg="#94a3b8",
+                 bg=C["header"]).pack(side="left", anchor="s", padx=(px(8), 0), pady=(0, px(4)))
+        body = tk.Frame(frame, bg=C["bg"])
+        body.pack(fill="both", padx=px(28), pady=(px(22), px(26)))
+        tk.Label(body, text="Choose your language", font=("Segoe UI", 13, "bold"), fg=C["text"],
+                 bg=C["bg"]).pack(anchor="w")
+        tk.Label(body, text="請選擇介面語言", font=("Microsoft JhengHei UI", 11), fg=C["muted"],
+                 bg=C["bg"]).pack(anchor="w", pady=(px(2), px(16)))
+
+        def pick(lang):
+            set_lang(lang)
+            build()
+            refresh()
+            center()
+
+        default = system_lang()
+        for lang, text, font in (("en", "English", "Segoe UI"), ("zh", "中文(繁體)", "Microsoft JhengHei UI")):
+            rim, b = make_button(body, text, lambda lang=lang: pick(lang),
+                                 "primary" if lang == default else "secondary")
+            b.config(font=(font, 13), pady=px(10), width=24)
+            rim.pack(fill="x", pady=(0, px(10)))
+        tk.Label(body, text="You can change this later in the control panel.\n之後可以在控制台右上角切換。",
+                 font=("Microsoft JhengHei UI", 9), fg=C["muted"], bg=C["bg"],
+                 justify="left").pack(anchor="w", pady=(px(4), 0))
 
     def build():
         if "frame" in w:
@@ -1582,12 +1693,13 @@ def gui():
         b.config(font=(FONT, 10), padx=px(10), pady=px(4))
         rim.pack(side="right")
 
-    build()
-    refresh()
+    if _LANG_ARG or load_settings().get("lang"):
+        build()
+        refresh()
+    else:
+        choose_lang()
     pump()
-    root.update_idletasks()  # center the window, slightly above the middle
-    root.geometry(f"+{(root.winfo_screenwidth() - root.winfo_width()) // 2}"
-                  f"+{(root.winfo_screenheight() - root.winfo_height()) // 3}")
+    center()
     root.mainloop()
 
 
