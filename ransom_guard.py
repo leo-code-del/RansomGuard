@@ -60,7 +60,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.4.0"  # bump this for a new release and create the matching GitHub Release (v1.4.0)
+VERSION = "1.4.1"  # bump this for a new release and create the matching GitHub Release (v1.4.1)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -92,12 +92,14 @@ CANARY_BYTES = ((
 # Headers of common file formats (encryption almost always breaks them); (offset, bytes) = header not at the start
 _OLE = [b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"]
 _ZIP = [b"PK\x03\x04"]
-_RIFF = [b"RIFF"]
-_MP4 = [(4, b"ftyp"), (4, b"moov"), (4, b"mdat"), (4, b"wide"), (4, b"free"), (4, b"skip")]
+_OOXML = _ZIP + _OLE  # password-protected Office files are OLE containers, not ZIP
+_RIFF = [b"RIFF", b"RF64", b"BW64"]
+_MP4 = [(4, b"ftyp"), (4, b"moov"), (4, b"mdat"), (4, b"wide"), (4, b"free"), (4, b"skip"),
+        (4, b"styp"), (4, b"sidx"), (4, b"pnot"), (4, b"uuid")]
 _MKV = [b"\x1a\x45\xdf\xa3"]
 MAGIC = {
-    ".docx": _ZIP, ".xlsx": _ZIP, ".pptx": _ZIP, ".odt": _ZIP, ".ods": _ZIP,
-    ".odp": _ZIP, ".epub": _ZIP, ".docm": _ZIP, ".xlsm": _ZIP, ".pptm": _ZIP,
+    ".docx": _OOXML, ".xlsx": _OOXML, ".pptx": _OOXML, ".odt": _ZIP, ".ods": _ZIP,
+    ".odp": _ZIP, ".epub": _ZIP, ".docm": _OOXML, ".xlsm": _OOXML, ".pptm": _OOXML,
     ".vsdx": _ZIP, ".zip": _ZIP + [b"PK\x05\x06", b"PK\x07\x08"],
     ".doc": _OLE, ".xls": _OLE, ".ppt": _OLE,
     ".pdf": [b"%PDF"],
@@ -111,12 +113,15 @@ MAGIC = {
     ".mp4": _MP4, ".m4v": _MP4, ".m4a": _MP4, ".mov": _MP4, ".heic": _MP4,
     ".mkv": _MKV, ".webm": _MKV,
     ".wmv": [b"\x30\x26\xb2\x75\x8e\x66\xcf\x11"],
-    ".flac": [b"fLaC"], ".ogg": [b"OggS"],
+    ".flac": [b"fLaC", b"ID3"], ".ogg": [b"OggS"],
     ".rar": [b"Rar!\x1a\x07"],
     ".7z": [b"7z\xbc\xaf\x27\x1c"],
     ".gz": [b"\x1f\x8b"],
     ".sqlite": [b"SQLite format 3\x00"],
 }
+# Every known header: a file whose header belongs to *some* real format was misnamed, not encrypted
+# (e.g. a WebP image downloaded as .jpg)
+KNOWN_SIGS = sorted({s for sigs in MAGIC.values() for s in sigs}, key=repr)
 TEXT_EXTS = {
     ".txt", ".csv", ".md", ".py", ".c", ".cpp", ".h", ".hpp", ".java", ".js",
     ".ts", ".html", ".htm", ".css", ".json", ".xml", ".tex", ".log", ".ini",
@@ -132,8 +137,17 @@ OTHER_COMMON_EXTS = {
     ".xmp", ".aae", ".srt", ".ass", ".sig", ".asc", ".ico", ".ttf", ".otf",
     ".db", ".sqlite", ".pkl", ".npy", ".mat", ".xlsm", ".docm", ".pptm",
     ".odg", ".vsdx", ".drawio", ".apk", ".jar", ".class", ".o", ".obj",
+    # extensions tools add on top of a real one: source maps, unfinished torrent/downloader files,
+    # patch leftovers, editor swap files, test snapshots, checksums, extra compression
+    ".map", ".!qb", ".!ut", ".!bt", ".aria2", ".opdownload", ".orig", ".rej", ".swp", ".swo", ".swx",
+    ".snap", ".sha1", ".sha256", ".sha512", ".md5", ".zst", ".lz4", ".br", ".asd", ".wbk",
 }
 COMMON_EXTS = set(MAGIC) | TEXT_EXTS | OTHER_COMMON_EXTS
+# split archives and numbered copies: .001, .002, .r00, .z01, .1 ...
+_NUMBERED_EXT = re.compile(r"\.[a-z]?\d{1,3}")
+# extensions ransom notes use; a "decrypt.py" or "Encrypt_Decrypt_Lab.pdf" is not a ransom note
+NOTE_EXTS = {"", ".txt", ".html", ".htm", ".hta", ".mht", ".mhtml", ".rtf", ".url",
+             ".png", ".jpg", ".jpeg", ".bmp"}
 IGNORE_EXTS = {".tmp", ".crdownload", ".part", ".download", ".partial"}
 
 # Ransom note file names (ransomware drops a note with the same name into every folder)
@@ -165,6 +179,12 @@ _DANGEROUS_CMDS = [
      "disabling Windows Defender protection"),
 ]
 DANGEROUS_CMDS = [(re.compile(p), zh, en) for p, zh, en in _DANGEROUS_CMDS]
+# Programs that actually run those commands. Any other program whose command line contains them
+# (git commit -m "...", grep, an editor opening a file) only mentions them; matching those once cut
+# the network during a git commit.
+COMMAND_HOSTS = {"vssadmin.exe", "wmic.exe", "bcdedit.exe", "wbadmin.exe", "wevtutil.exe", "diskshadow.exe",
+                 "cmd.exe", "powershell.exe", "pwsh.exe", "powershell_ise.exe", "wscript.exe", "cscript.exe",
+                 "mshta.exe"}
 _PS_ENCODED = re.compile(r"(?:^|\s)[-/]e(?:c|nc?\w*)?\s+([A-Za-z0-9+/=]{12,})", re.IGNORECASE)
 
 log = logging.getLogger("RansomGuard")
@@ -227,11 +247,17 @@ def setup_logging():
         log.addHandler(sh)
 
 
-def load_state() -> dict:
+def _load_json(name: str) -> dict:
+    """Read a JSON object from the app folder; a missing, damaged or non-object file counts as empty."""
     try:
-        return json.loads((app_dir() / "state.json").read_text(encoding="utf-8"))
+        data = json.loads((app_dir() / name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_state() -> dict:
+    return _load_json("state.json")
 
 
 def save_state(st: dict):
@@ -240,10 +266,13 @@ def save_state(st: dict):
 
 
 def load_settings() -> dict:
-    try:
-        return json.loads((app_dir() / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    return _load_json("settings.json")
+
+
+def saved_lang():
+    """Language chosen in the control panel; None if none (or an unknown one) was saved."""
+    lang = load_settings().get("lang")
+    return lang if lang in ("zh", "en") else None
 
 
 def system_lang() -> str:
@@ -262,7 +291,7 @@ def init_lang(arg=None):
     global LANG, _LANG_ARG
     if arg:
         _LANG_ARG = arg
-    LANG = _LANG_ARG or load_settings().get("lang") or system_lang()
+    LANG = _LANG_ARG or saved_lang() or system_lang()
 
 
 def set_lang(lang: str):
@@ -671,6 +700,8 @@ def check_canaries(canaries):
             if Path(p).read_bytes() != CANARY_BYTES:
                 return tr(f"誘餌檔內容被修改：{p}", f"Canary file was modified: {p}")
         except FileNotFoundError:
+            if not Path(p).parent.is_dir():
+                continue  # the whole folder is gone (e.g. OneDrive was unlinked), not an attack on the file
             return tr(f"誘餌檔不見了：{p}", f"Canary file is missing: {p}")
         except OSError:
             pass  # temporarily locked (e.g. antivirus is scanning); check again next time
@@ -718,7 +749,11 @@ def broken_reason(path: str):
         return None
     if ext in MAGIC:
         ok = (b"%PDF" in data[:1024]) if ext == ".pdf" else _magic_ok(data, MAGIC[ext])
-        return None if ok else tr("檔頭不符", "bad file header")
+        if (ok or len(data) < 256  # too small to judge (e.g. a Git LFS pointer)
+                or _magic_ok(data, KNOWN_SIGS) or b"%PDF" in data[:1024]  # a real file with the wrong extension
+                or entropy(data) < 7.0):  # text such as an HTML/CSV "spreadsheet"; encrypted data is ~8
+            return None
+        return tr("檔頭不符", "bad file header")
     if ext == ".ts" and data[0] == 0x47 and (len(data) <= 188 or data[188] == 0x47):
         return None  # an MPEG-TS video (same extension), not TypeScript
     if size >= ENTROPY_MIN_SIZE:
@@ -728,13 +763,18 @@ def broken_reason(path: str):
     return None
 
 
+def _known_ext(ext: str) -> bool:
+    return ext in COMMON_EXTS or bool(_NUMBERED_EXT.fullmatch(ext))
+
+
 def suspicious_ext(event_type: str, src: str, dest: str) -> bool:
     if event_type == "moved":
         s, d = Path(src).suffix.lower(), Path(dest).suffix.lower()
-        return s in COMMON_EXTS and d not in COMMON_EXTS and d != "" and s != d
+        return (s in COMMON_EXTS and not _known_ext(d) and d != "" and s != d
+                and not d.startswith(s))  # photo.jpg -> photo.jpg_original (exiftool) keeps the extension
     if event_type == "created":
         sfx = [x.lower() for x in Path(src).suffixes]
-        return (len(sfx) >= 2 and sfx[-1] not in COMMON_EXTS
+        return (len(sfx) >= 2 and not _known_ext(sfx[-1])
                 and any(x in COMMON_EXTS for x in sfx[:-1]))
     return False
 
@@ -745,8 +785,11 @@ def ignorable(path: str) -> bool:
 
 
 def is_ransom_note(name: str) -> bool:
+    p = Path(name)
+    if p.suffix.lower() not in NOTE_EXTS:
+        return False
     # drop our own name first: "RansomGuard.exe", "RansomGuard.lnk" etc. contain "ransom"
-    return bool(NOTE_PATTERN.search(re.sub(r"ransom[\W_]*guard", "", Path(name).stem, flags=re.IGNORECASE)))
+    return bool(NOTE_PATTERN.search(re.sub(r"ransom[\W_]*guard", "", p.stem, flags=re.IGNORECASE)))
 
 
 def dangerous_command(cmdline: str):
@@ -766,6 +809,13 @@ def dangerous_command(cmdline: str):
             if pat.search(low):
                 return tr(zh, en)
     return None
+
+
+def dangerous_process(name: str, cmdline: str):
+    """dangerous_command() for a new process, but only for programs that can run such commands."""
+    if (name or "").lower() not in COMMAND_HOSTS:
+        return None
+    return dangerous_command(cmdline)
 
 
 # ---------------- Event handling ----------------
@@ -867,20 +917,34 @@ def make_handler(canaries, on_trigger, dry_run):
 
 
 # ---------------- Process monitor (Windows) ----------------
-# Get every new process's command line through WMI, one per line: PID <tab> parent PID <tab> name <tab> command line
+# Get every new process's command line through WMI, one per line: PID <tab> parent PID <tab> name <tab> command line.
+# WMI polling misses processes that exit between two polls: every 0.5 s catches those living ~0.25 s or
+# longer (every 1 s needed ~1 s) for about 2% more of one CPU core. The kernel start trace (administrator
+# only) is watched too and sometimes catches even shorter ones; for those, only COMMAND_HOSTS are looked up.
 PROC_PS1 = r'''
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$q = "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'"
+$hosts = @(__HOSTS__)
+$q = "SELECT * FROM __InstanceCreationEvent WITHIN 0.5 WHERE TargetInstance ISA 'Win32_Process'"
 Register-CimIndicationEvent -Query $q -SourceIdentifier RGProc -ErrorAction Stop
-[Console]::Out.WriteLine('READY'); [Console]::Out.Flush()
+$trace = $true
+try { Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace -SourceIdentifier RGTrace -ErrorAction Stop }
+catch { $trace = $false }
+[Console]::Out.WriteLine("READY`t$trace"); [Console]::Out.Flush()
 while ($true) {
-    $e = Wait-Event -SourceIdentifier RGProc
-    $p = $e.SourceEventArgs.NewEvent.TargetInstance
+    $e = Wait-Event
+    $n = $e.SourceEventArgs.NewEvent
+    Remove-Event -EventIdentifier $e.EventIdentifier
+    if ($e.SourceIdentifier -eq 'RGTrace') {
+        if ($hosts -notcontains "$($n.ProcessName)") { continue }
+        $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($n.ProcessID)" -ErrorAction SilentlyContinue
+        if (-not $p) { continue }
+    } else {
+        $p = $n.TargetInstance
+    }
     $line = '{0}{4}{1}{4}{2}{4}{3}' -f $p.ProcessId, $p.ParentProcessId, $p.Name, $p.CommandLine, "`t"
     [Console]::Out.WriteLine(($line -replace "[\r\n]", ' ')); [Console]::Out.Flush()
-    Remove-Event -EventIdentifier $e.EventIdentifier
 }
-'''
+'''.replace("__HOSTS__", ", ".join(f"'{h}'" for h in sorted(COMMAND_HOSTS)))
 
 
 class ProcessMonitor:
@@ -890,6 +954,7 @@ class ProcessMonitor:
         self.on_hit = on_hit
         self.kill = kill
         self.proc = None
+        self.recent = deque(maxlen=256)  # PIDs already checked (both WMI sources can report a process)
 
     def start(self):
         self.proc = subprocess.Popen(
@@ -909,8 +974,9 @@ class ProcessMonitor:
     def _read(self, proc):
         for raw in proc.stdout or ():
             line = raw.decode("utf-8", "replace").rstrip("\r\n")
-            if line == "READY":
-                log.info(tr("程序監控已啟動", "Process monitor started"))
+            if line.startswith("READY"):
+                log.info(tr("程序監控已啟動（即時追蹤：%s）", "Process monitor started (real-time trace: %s)"),
+                         line.endswith("True"))
                 continue
             parts = line.split("\t", 3)
             if len(parts) != 4:
@@ -923,15 +989,17 @@ class ProcessMonitor:
     def _check(self, pid, ppid, name, cmdline):
         if ppid == os.getpid() and name.lower() == "powershell.exe":  # started by this program itself
             return
-        what = dangerous_command(cmdline)
-        if not what:
+        what = dangerous_process(name, cmdline)
+        if not what or pid in self.recent:
             return
+        self.recent.append(pid)
         if self.kill:
             try:
                 os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
                 result = tr("已強制終止", "terminated")
-            except OSError as ex:
-                result = tr(f"無法終止：{ex}", f"could not terminate: {ex}")
+            except OSError as ex:  # WinError 87: it already exited before it could be stopped
+                result = (tr("已經結束", "already exited") if getattr(ex, "winerror", None) == 87 else
+                          tr(f"無法終止：{ex}", f"could not terminate: {ex}"))
         else:
             result = tr("測試模式：未終止", "test mode: not terminated")
         log.critical(tr("可疑指令（%s）%s PID %s，父程序 PID %s，%s：%s",
@@ -1162,7 +1230,8 @@ def task_state() -> str:
 
 def stop_monitor():
     _ps(f"Stop-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction SilentlyContinue")
-    proc_enc = ps_encoded_args(PROC_PS1)[-1][:200]
+    # the encoded opening line of PROC_PS1, the same in every version, so older monitors' scripts match too
+    proc_enc = ps_encoded_args(PROC_PS1)[-1][:120]
     _ps(_KILL_PS1.replace("__ME__", f"{os.getpid()},{os.getppid()}")
         .replace("__PROC__", proc_enc))
     log.info(tr("已停止背景監控", "Background monitoring stopped"))
@@ -1210,7 +1279,14 @@ def replace_install_exe(write):
     old = None
     if INSTALL_EXE.exists():
         old = INSTALL_DIR / f"RansomGuard.old-{uuid.uuid4().hex[:8]}.exe"
-        os.replace(INSTALL_EXE, old)
+        for i in range(10):
+            try:
+                os.replace(INSTALL_EXE, old)
+                break
+            except PermissionError:  # briefly locked, e.g. antivirus scanning the exe
+                if i == 9:
+                    raise
+                time.sleep(1)
     try:
         write()
     except Exception:
@@ -1464,6 +1540,7 @@ def gui():
         for b in buttons:
             b.config(state="disabled")
         w["busy"].config(text=tr("執行中...", "Working..."))
+        w["working"] = True
         w["out"].config(state="normal")
         w["out"].delete("1.0", "end")
         w["out"].config(state="disabled")
@@ -1489,17 +1566,23 @@ def gui():
                     for b in buttons:
                         b.config(state="normal")
                     w["busy"].config(text="")
+                    w["working"] = False
                     if UPDATED_TO:  # reopen the control panel from the newly installed version
                         messagebox.showinfo("RansomGuard", tr(f"已更新到 v{UPDATED_TO}，控制台會用新版本重新開啟。",
                                                               f"Updated to v{UPDATED_TO}. The control panel "
                                                               "will reopen with the new version."))
-                        subprocess.Popen([str(INSTALL_EXE), "--gui"], cwd=str(INSTALL_DIR))
-                        root.destroy()
-                        return
+                        try:
+                            subprocess.Popen([str(INSTALL_EXE), "--gui"], cwd=str(INSTALL_DIR))
+                        except OSError as ex:
+                            write(tr(f"[失敗] 無法開啟新版本：{ex}", f"[Failed] Could not open the new version: {ex}"),
+                                  "err")
+                        else:
+                            root.destroy()
+                            return
                     refresh()
         except queue.Empty:
             pass
-        root.after(100, pump)
+        w["pump"] = root.after(100, pump)
 
     def on_restore():
         if network_cut(load_state()) and not messagebox.askyesno(
@@ -1548,6 +1631,15 @@ def gui():
         set_lang("en" if LANG == "zh" else "zh")
         build()
         refresh()
+
+    def on_close():
+        # closing mid-install would kill the worker thread and could leave monitoring stopped
+        if w.get("working"):
+            messagebox.showwarning("RansomGuard", tr("操作還在進行中，請等它完成再關閉。",
+                                                     "An action is still running. Please wait for it to finish."))
+            return
+        root.after_cancel(w["pump"])
+        root.destroy()
 
     def center():
         root.update_idletasks()  # center the window, slightly above the middle
@@ -1693,7 +1785,8 @@ def gui():
         b.config(font=(FONT, 10), padx=px(10), pady=px(4))
         rim.pack(side="right")
 
-    if _LANG_ARG or load_settings().get("lang"):
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    if _LANG_ARG or saved_lang():
         build()
         refresh()
     else:

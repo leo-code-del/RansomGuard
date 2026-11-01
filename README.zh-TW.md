@@ -86,6 +86,12 @@ python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon
        --distpath dist --workpath build --specpath build ransom_guard.py
 ```
 
+執行測試（只使用暫存資料夾，不會動到網路或已安裝的程式）：
+
+```
+python -m unittest discover -s tests -v
+```
+
 圖標 `icon.ico` / `icon.png` 由 `make_icon.py` 產生（需要 `pip install pillow`），要改圖標就改這個檔案再執行一次。
 
 不想用 exe、直接用 Python 執行的話，專案裡有幾個輔助檔案（要和 `ransom_guard.py` 放在同一個資料夾）：
