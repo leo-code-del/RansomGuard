@@ -605,6 +605,47 @@ class UpdateTests(TempDirTest):
             rg.replace_install_exe(boom)
         self.assertEqual(rg.INSTALL_EXE.read_bytes(), b"old version")
 
+    def test_spawned_exe_gets_a_fresh_pyinstaller_environment(self):
+        seen = {}
+        env = {"PATH": "x", "_PYI_APPLICATION_HOME_DIR": r"C:\Temp\_MEI123", "_PYI_PARENT_PROCESS_LEVEL": "1",
+               "_MEIPASS2": r"C:\Temp\_MEI123"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(rg.subprocess, "Popen", lambda args, **kw: seen.update(args=args, **kw)):
+            rg.spawn_installed("--gui")
+        self.assertEqual(seen["args"], [str(rg.INSTALL_EXE), "--gui"])
+        self.assertEqual(seen["env"].get("PYINSTALLER_RESET_ENVIRONMENT"), "1")
+        self.assertFalse([k for k in seen["env"] if k.startswith("_PYI_") or k == "_MEIPASS2"])
+        self.assertEqual(seen["env"]["PATH"], "x")
+
+    def test_restart_only_when_running_on_borrowed_files(self):
+        def restarted(meipass, ppid, env=None):
+            calls = []
+            with mock.patch.object(rg, "FROZEN", True), mock.patch.object(rg, "IS_WINDOWS", True), \
+                    mock.patch.object(rg.sys, "_MEIPASS", meipass, create=True), \
+                    mock.patch.object(rg.os, "getppid", lambda: ppid), \
+                    mock.patch.dict(os.environ, env or {}), \
+                    mock.patch.object(rg.subprocess, "Popen", lambda args, **kw: calls.append(kw["env"])):
+                os.environ.pop("RG_FRESH_START", None) if not env else None
+                return rg.restart_if_borrowed_files(), calls
+        self.assertEqual(restarted(r"C:\Temp\_MEI223522", 22352), (False, []))  # unpacked by our parent
+        did, calls = restarted(r"C:\Temp\_MEI224922", 1220)                      # someone else's files
+        self.assertTrue(did)
+        self.assertEqual(calls[0]["RG_FRESH_START"], "1")
+        self.assertEqual(restarted(r"C:\Temp\_MEI224922", 1220, {"RG_FRESH_START": "1"}), (False, []))  # once only
+        self.assertEqual(restarted(r"C:\Temp\custom_dir", 1220), (False, []))   # unknown folder name
+
+    def test_failed_install_restarts_the_previous_monitor(self):
+        started = []
+
+        def broken(report):
+            raise FileNotFoundError("base_library.zip")
+        with mock.patch.object(rg, "stop_monitor", lambda: None), mock.patch.object(rg, "_install", broken), \
+                mock.patch.object(rg, "task_state", lambda: "Ready"), \
+                mock.patch.object(rg, "start_monitor", lambda: started.append(1) or True):
+            with self.assertRaises(FileNotFoundError):
+                rg.install(lambda m: None)
+        self.assertEqual(started, [1])
+
     def test_cleanup_old_files(self):
         appdir = self.dir / "app"
         appdir.mkdir()

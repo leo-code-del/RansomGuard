@@ -45,6 +45,7 @@ Download and update: https://github.com/leo-code-del/RansomGuard/releases
 import argparse
 import base64
 import ctypes
+import hashlib
 import json
 import logging
 import math
@@ -56,12 +57,13 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request  # imported up front: the update must not depend on loading modules later
 import uuid
 from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.5.1"  # bump this for a new release and create the matching GitHub Release (v1.5.1)
+VERSION = "1.5.2"  # bump this for a new release and create the matching GitHub Release (v1.5.2)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -366,6 +368,32 @@ def kill_with_me(proc):
                     proc.pid, ctypes.get_last_error())
     if h:
         k32.CloseHandle(h)
+
+
+def restart_if_borrowed_files() -> bool:
+    """A one-file exe normally runs as the child of its own unpacker, which names the unpacked folder
+    _MEI<its PID><digit>. If another program started this exe with its own environment (control panels
+    before 1.5.2 did when reopening after an update), this process runs on that program's unpacked
+    files, which vanish when it exits. Start again as a fresh program in that case (only once);
+    returns True if this process should exit."""
+    if not (IS_WINDOWS and FROZEN) or os.environ.get("RG_FRESH_START"):
+        return False
+    name = os.path.basename(getattr(sys, "_MEIPASS", ""))
+    if not re.fullmatch(r"_MEI\d+", name) or re.fullmatch(rf"_MEI{os.getppid()}\d", name):
+        return False  # not a folder name we understand, or unpacked by our own parent: fine
+    env = fresh_env()
+    env["RG_FRESH_START"] = "1"
+    subprocess.Popen([sys.executable, *sys.argv[1:]], env=env)
+    return True
+
+
+def fresh_env() -> dict:
+    """This environment without PyInstaller's unpacking variables, so a one-file exe started with it
+    unpacks its own files instead of reusing (and later losing) ours."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("_PYI_") and k not in ("_MEIPASS2", "RG_FRESH_START")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
 
 
 def exit_with_launcher():
@@ -1313,8 +1341,6 @@ def replace_install_exe(write):
 
 def latest_release():
     """(version, RansomGuard.exe asset or None) of the newest release on GitHub."""
-    import urllib.request
-
     req = urllib.request.Request(UPDATE_API, headers={"User-Agent": "RansomGuard",
                                                       "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -1337,9 +1363,6 @@ def check_for_update():
 def fetch_update(report):
     """If GitHub has a newer release, download it, check its SHA-256 against the one GitHub publishes
     and install it as INSTALL_EXE. Returns the new version, or None (already latest / check failed)."""
-    import hashlib
-    import urllib.request
-
     report(tr("檢查新版本...", "Checking for a new version..."))
     try:
         latest, asset = latest_release()
@@ -1370,12 +1393,31 @@ def fetch_update(report):
     return latest
 
 
+def spawn_installed(*args):
+    """Start the installed exe as a fresh program. A one-file PyInstaller exe started by another one
+    inherits its environment and would reuse the starter's unpacked files (%TEMP%\\_MEI...), which are
+    deleted when the starter exits; it then fails as soon as it loads another module."""
+    return subprocess.Popen([str(INSTALL_EXE), *args], cwd=str(INSTALL_DIR), env=fresh_env())
+
+
 def install(report=print) -> bool:
     """Update from GitHub if there is a newer release (otherwise copy this exe) into Program Files,
-    create a scheduled task that runs elevated at sign-in and a desktop shortcut, then start monitoring."""
-    global UPDATED_TO
+    create a scheduled task that runs elevated at sign-in and a desktop shortcut, then start monitoring.
+    If anything fails, the monitoring that was installed before is started again."""
     report(tr("停止舊的監控...", "Stopping the old monitor..."))
     stop_monitor()
+    try:
+        return _install(report)
+    except Exception:
+        if task_state():  # don't leave the computer unprotected
+            report(tr("安裝沒有完成，重新啟動原本的監控...", "Install did not finish; restarting the previous monitoring..."))
+            report(tr("  監控已重新啟動", "  Monitoring restarted") if start_monitor() else
+                   tr("  監控沒有啟動，請查看紀錄檔", "  Monitoring did not start; please check the log"))
+        raise
+
+
+def _install(report) -> bool:
+    global UPDATED_TO
     UPDATED_TO = fetch_update(report) if FROZEN else None
     if FROZEN and UPDATED_TO is None and norm(sys.executable) != norm(INSTALL_EXE):
         # a program that runs as administrator must live in a folder only administrators can change
@@ -1478,7 +1520,7 @@ def update_watcher(stop):
             log.info(tr("有新版本 v%s，詢問是否更新", "Version %s is available; asking whether to update"), new)
             if ask_update(new):
                 try:
-                    subprocess.Popen([str(INSTALL_EXE), "--update"], cwd=str(INSTALL_DIR))
+                    spawn_installed("--update")
                 except OSError as ex:
                     log.error(tr("無法開啟控制台更新：%s", "Could not open the control panel to update: %s"), ex)
         if stop.wait(UPDATE_CHECK_INTERVAL):
@@ -1668,7 +1710,7 @@ def gui(auto_update=False):
                                                               f"Updated to v{UPDATED_TO}. The control panel "
                                                               "will reopen with the new version."))
                         try:
-                            subprocess.Popen([str(INSTALL_EXE), "--gui"], cwd=str(INSTALL_DIR))
+                            spawn_installed("--gui")
                         except OSError as ex:
                             write(tr(f"[失敗] 無法開啟新版本：{ex}", f"[Failed] Could not open the new version: {ex}"),
                                   "err")
@@ -2037,6 +2079,8 @@ def run(args):
 
 
 def main():
+    if restart_if_borrowed_files():
+        return
     fix_console_encoding()
     langs = ["zh", "en"]
     pre = argparse.ArgumentParser(add_help=False)  # read --lang first so the help text is in the right language
