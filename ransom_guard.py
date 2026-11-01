@@ -13,10 +13,14 @@ Detection (any one of these triggers it):
      points (vssadmin, wmic), disabling boot recovery (bcdedit), deleting backups (wbadmin), clearing
      event logs, disabling Defender (in normal mode that process is terminated immediately)
 
-When triggered: disable every network adapter (fall back to a firewall block) -> write the log
+When triggered: pause the programs writing the most data (Microsoft Defender then scans them)
+        -> disable every network adapter (fall back to a firewall block) -> write the log
         -> full-screen red warning (all screens, flashing, alarm sound); adapters re-enabled while the
            warning is open are disabled again
         (optional: HIBERNATE_ON_TRIGGER = True hibernates right away so encryption stops)
+
+Also: new programs, scripts and archives in Downloads or on the Desktop are scanned by Microsoft Defender
+      once they finish downloading, and the user is told if it finds a threat.
 
 Usage (Windows; normal mode needs administrator rights):
   python ransom_guard.py             monitor (the packaged .exe opens the control panel when run without options)
@@ -63,7 +67,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.5.4"  # bump this for a new release and create the matching GitHub Release (v1.5.4)
+VERSION = "1.6.0"  # bump this for a new release and create the matching GitHub Release (v1.6.0)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -82,6 +86,9 @@ NOTE_DIR_THRESHOLD = 3       # trigger when ransom notes appear in this many fol
 PROCESS_MONITOR = True       # watch new processes and stop destructive commands (deleting restore points, disabling Defender...)
 CHECK_INTERVAL = 15          # seconds between periodic checks of canary files and monitor health
 HIBERNATE_ON_TRIGGER = False # True: hibernate right after cutting the network so encryption stops
+PAUSE_ON_TRIGGER = True      # pause the programs writing the most data when it triggers (stops the encryption)
+DEFENDER_SCAN_ON_TRIGGER = True  # have Microsoft Defender scan the paused programs and run a quick scan
+DEFENDER_SCAN_DOWNLOADS = True   # have Defender scan new programs, scripts and archives in Downloads / on the Desktop
 # ============================================
 
 CANARY_NAMES = ["!!!_canary_do_not_delete.docx", "!!!_canary_do_not_delete.xlsx", "zzz_canary_do_not_delete.docx"]
@@ -572,14 +579,20 @@ if (-not $script:ack) { exit 3 }  # not closed by the user's button (e.g. closed
 '''
 
 
-def fullscreen_alert(reason: str, status: str, wait: bool = False):
-    """Full-screen warning. status: cut (network cut) / partial (cut may be incomplete) / test."""
+def fullscreen_alert(reason: str, status: str, wait: bool = False, paused=()):
+    """Full-screen warning. status: cut (network cut) / partial (cut may be incomplete) / test.
+    paused: the programs pause_writers() found."""
     log.warning(tr("[全螢幕警告] %s（%s）", "[Full-screen warning] %s (%s)"), reason, status)
     if not IS_WINDOWS:
         return None
     try:
         reason = reason if len(reason) <= 160 else reason[:157] + "..."
         now = time.strftime("%Y-%m-%d %H:%M:%S")
+        detail = tr(f"偵測時間：{now}\n原因：{reason}", f"Detected at: {now}\nReason: {reason}")
+        if paused:
+            detail += "\n" + tr("大量寫入的程式：", "Programs writing heavily: ") + tr("、", ", ").join(
+                tr(f"{p['name']}（PID {p['pid']}，{p['result']}）", f"{p['name']} (PID {p['pid']}, {p['result']})")
+                for p in paused)
         steps = [
             tr("1. 不要恢復網路，也不要插上備份硬碟或隨身碟",
                "1. Do not restore the network, and do not plug in backup drives or USB sticks"),
@@ -601,7 +614,7 @@ def fullscreen_alert(reason: str, status: str, wait: bool = False):
                                   "The network may not be fully cut off! Unplug the network "
                                   "cable and turn off Wi-Fi now")
                     }.get(status, tr("（測試模式：沒有切斷網路）", "(Test mode: the network was not cut off)")),
-            "detail": tr(f"偵測時間：{now}\n原因：{reason}", f"Detected at: {now}\nReason: {reason}"),
+            "detail": detail,
             "next": tr("接下來請這樣做：", "What to do now:"),
             "steps": "\n".join(steps),
             "hint": (tr("這是測試，按下方按鈕關閉即可。", "This is a test. Click the button below to close it.")
@@ -850,7 +863,8 @@ def dangerous_process(name: str, cmdline: str):
 
 
 # ---------------- Event handling ----------------
-def make_handler(canaries, on_trigger, dry_run):
+def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
+    """on_new_file(path) is told about every file that is created or renamed (for DownloadScanner)."""
     from watchdog.events import FileSystemEventHandler
 
     class Guard(FileSystemEventHandler):
@@ -919,6 +933,8 @@ def make_handler(canaries, on_trigger, dry_run):
             if dest and norm(dest) in self.canaries:
                 return self.fire(tr(f"有檔案覆蓋了誘餌檔：{src} → {dest}",
                                     f"A file overwrote a canary file: {src} → {dest}"))
+            if on_new_file and t in ("created", "moved"):
+                on_new_file(dest if t == "moved" else src)
 
             # 3. Renamed to unknown extensions
             if suspicious_ext(t, src, dest):
@@ -1038,6 +1054,297 @@ class ProcessMonitor:
                      what, name, pid, ppid, result, cmdline)
         self.on_hit(tr(f"有程序在{what}：{name}（PID {pid}，{result}）{cmdline[:120]}",
                        f"A process is {what}: {name} (PID {pid}, {result}) {cmdline[:120]}"))
+
+
+# ---------------- Pausing the encrypting program (Windows) ----------------
+# File events don't say which program wrote a file, but a program that is encrypting writes far more than
+# anything else. So on a trigger every process's write counters are read twice, PAUSE_SAMPLE_SEC apart, and
+# the heaviest writers are paused (suspended, not killed: restoring the network after a false alarm lets
+# them run again). Defender then scans their program files and removes what it recognises; on its own it
+# often recognises new ransomware only some time after the encryption has begun.
+PAUSE_SAMPLE_SEC = 1.0
+PAUSE_MIN_WRITES = 20         # a program is paused if it wrote at least this many times during the sample...
+PAUSE_MIN_BYTES = 256 * 1024  # ...and at least this much data
+PAUSE_MAX = 5  # editors, browsers and cloud sync write ~1-2 MB/s even when idle; leave room for the real one
+# Windows itself, Defender and the desktop are never paused, as long as they run from their own folder
+# (malware can borrow a name, not the folder)
+PAUSE_SAFE = {"registry", "memory compression", "secure system", "smss.exe", "csrss.exe", "wininit.exe",
+              "winlogon.exe", "services.exe", "lsass.exe", "lsaiso.exe", "svchost.exe", "dwm.exe",
+              "fontdrvhost.exe", "explorer.exe", "sihost.exe", "taskhostw.exe", "conhost.exe", "audiodg.exe",
+              "spoolsv.exe", "wmiprvse.exe", "searchindexer.exe", "trustedinstaller.exe", "tiworker.exe",
+              "msmpeng.exe", "nissrv.exe", "mpdefendercoreservice.exe", "securityhealthservice.exe",
+              "mpcmdrun.exe"}
+MPCMDRUN = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Windows Defender" / "MpCmdRun.exe"
+
+
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", ctypes.c_uint32), ("cntUsage", ctypes.c_uint32),
+                ("th32ProcessID", ctypes.c_uint32), ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", ctypes.c_uint32), ("cntThreads", ctypes.c_uint32),
+                ("th32ParentProcessID", ctypes.c_uint32), ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", ctypes.c_uint32), ("szExeFile", ctypes.c_wchar * 260)]
+
+
+def _proc_api():
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    k32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    k32.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PROCESSENTRY32W)]
+    k32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PROCESSENTRY32W)]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+    k32.GetProcessIoCounters.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64 * 6)]
+    k32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                               ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32)]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    return k32
+
+
+def write_counters() -> dict:
+    """{pid: (name, write operations, bytes written)} of every readable process except this program and its children."""
+    k32 = _proc_api()
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snap or snap == ctypes.c_void_p(-1).value:
+        return {}
+    procs = []
+    e = _PROCESSENTRY32W(dwSize=ctypes.sizeof(_PROCESSENTRY32W))
+    ok = k32.Process32FirstW(snap, ctypes.byref(e))
+    while ok:
+        procs.append((e.th32ProcessID, e.th32ParentProcessID, e.szExeFile))
+        ok = k32.Process32NextW(snap, ctypes.byref(e))
+    k32.CloseHandle(snap)
+    me, out, io = os.getpid(), {}, (ctypes.c_uint64 * 6)()
+    for pid, ppid, name in procs:
+        if pid in (0, 4, me) or ppid == me:
+            continue
+        h = k32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not h:
+            continue
+        if k32.GetProcessIoCounters(h, ctypes.byref(io)):
+            out[pid] = (name, io[1], io[4])  # WriteOperationCount, WriteTransferCount
+        k32.CloseHandle(h)
+    return out
+
+
+def heaviest_writers(before: dict, after: dict) -> list:
+    """[(pid, name, writes, bytes)] of the processes that wrote enough between two write_counters(), most data
+    first. A process that started in between (or whose PID was reused) counts everything it wrote."""
+    rows = []
+    for pid, (name, writes, size) in after.items():
+        prev = before.get(pid)
+        w0, s0 = prev[1:] if prev and prev[0] == name else (0, 0)
+        if writes - w0 >= PAUSE_MIN_WRITES and size - s0 >= PAUSE_MIN_BYTES:
+            rows.append((pid, name, writes - w0, size - s0))
+    return sorted(rows, key=lambda r: r[3], reverse=True)
+
+
+def process_path(pid: int) -> str:
+    """Full path of a process's program file ("" if it can't be read or has exited)."""
+    k32 = _proc_api()
+    h = k32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    buf = ctypes.create_unicode_buffer(1024)
+    n = ctypes.c_uint32(len(buf))
+    ok = k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+    k32.CloseHandle(h)
+    return buf.value if ok else ""
+
+
+def trusted_process(name: str, path: str) -> bool:
+    """A Windows, Defender or desktop process running from its own folder."""
+    if name.lower() not in PAUSE_SAFE:
+        return False
+    if not path:  # Windows' minimal and protected processes can't be read (nor paused); a borrowed name can
+        return True
+    roots = [os.environ.get("SystemRoot", r"C:\Windows"),
+             os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Windows Defender"),
+             os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "Microsoft", "Windows Defender")]
+    p = norm(path)
+    return any(p.startswith(norm(r) + os.sep) for r in roots)
+
+
+def set_paused(pid: int, paused: bool) -> bool:
+    """Suspend (paused=True) or resume every thread of a process."""
+    k32 = _proc_api()
+    ntdll = ctypes.WinDLL("ntdll")
+    fn = ntdll.NtSuspendProcess if paused else ntdll.NtResumeProcess
+    fn.argtypes = [ctypes.c_void_p]
+    fn.restype = ctypes.c_long
+    h = k32.OpenProcess(0x0800, False, pid)  # PROCESS_SUSPEND_RESUME
+    if not h:
+        return False
+    ok = fn(h) == 0  # STATUS_SUCCESS
+    k32.CloseHandle(h)
+    return ok
+
+
+def pause_writers(dry_run: bool) -> list:
+    """Pause the programs writing the most right now (test mode: only report them).
+    Returns [{"pid", "name", "path", "paused", "result"}]."""
+    try:
+        before = write_counters()
+        time.sleep(PAUSE_SAMPLE_SEC)
+        rows = heaviest_writers(before, write_counters())
+    except Exception:
+        log.exception(tr("讀取程序寫入量失敗", "Failed to read how much processes write"))
+        return []
+    found = []
+    for pid, name, writes, size in rows:
+        path = process_path(pid)
+        if trusted_process(name, path):
+            continue
+        if dry_run:
+            paused, result = False, tr("測試模式：未暫停", "test mode: not paused")
+        else:
+            paused = set_paused(pid, True)
+            result = tr("已暫停", "paused") if paused else tr("無法暫停", "could not pause")
+        log.critical(tr("大量寫入的程式 %s（PID %s，%d 次寫入、%d KB），%s：%s",
+                        "Program writing heavily %s (PID %s, %d writes, %d KB), %s: %s"),
+                     name, pid, writes, size // 1024, result, path)
+        found.append({"pid": pid, "name": name, "path": path, "paused": paused, "result": result})
+        if len(found) >= PAUSE_MAX:
+            break
+    if not found:
+        log.info(tr("沒有找到正在大量寫入的程式", "No program is writing heavily right now"))
+    return found
+
+
+def defender_scan(path=None, timeout=600):
+    """Scan one file (or run a quick scan) with Microsoft Defender, which removes what it finds.
+    Returns MpCmdRun's exit code (0 = no threats, 2 = threat found), or None if it could not run."""
+    if not MPCMDRUN.is_file():
+        return None
+    args = ([str(MPCMDRUN), "-Scan", "-ScanType", "3", "-File", path] if path else
+            [str(MPCMDRUN), "-Scan", "-ScanType", "1"])
+    try:
+        return subprocess.run(args, capture_output=True, timeout=timeout,
+                              creationflags=CREATE_NO_WINDOW).returncode
+    except Exception as ex:
+        log.error(tr("Defender 掃描失敗：%s", "Defender scan failed: %s"), ex)
+        return None
+
+
+def scan_result(rc) -> str:
+    return {0: tr("沒有發現威脅", "no threats found"),
+            2: tr("發現威脅，由 Defender 處理", "threat found, Defender is handling it"),
+            None: tr("無法執行 Defender", "Defender could not run")}.get(
+        rc, tr(f"結束代碼 {rc}", f"exit code {rc}"))
+
+
+def ask_defender(paths):
+    """After a trigger: Defender scans the files of the programs that were writing heavily, then runs a quick
+    scan. (The network is cut by then, so only the signatures already on this computer are used.)"""
+    for p in paths:
+        log.warning(tr("Defender 掃描 %s：%s", "Defender scan of %s: %s"), p, scan_result(defender_scan(p)))
+    log.warning(tr("Defender 快速掃描：%s", "Defender quick scan: %s"), scan_result(defender_scan(timeout=3600)))
+
+
+def resume_paused(paused, report):
+    """Restoring the network means the user called it a false alarm: let the programs paused at the trigger
+    run again, but only the ones Defender still finds clean (with the network back it can ask its cloud)."""
+    report(tr("恢復被暫停的程式...", "Resuming paused programs..."))
+    for p in paused:
+        pid, path = p.get("pid"), p.get("path") or ""
+        label = f"{p.get('name')} (PID {pid})"
+        now = process_path(pid) if isinstance(pid, int) else ""
+        if not path or not now or norm(now) != norm(path):
+            report(tr(f"  {label} 已經結束", f"  {label} has already exited") if path else
+                   tr(f"  {label} 無法確認是哪個程式，維持暫停；重新開機會結束它",
+                      f"  {label} could not be identified, so it stays paused; restarting the computer ends it"))
+            continue
+        rc = defender_scan(path)
+        if rc != 0:
+            log.warning(tr("%s 維持暫停（Defender：%s）", "%s stays paused (Defender: %s)"), label, scan_result(rc))
+            report(tr(f"  {label} 維持暫停（Defender：{scan_result(rc)}）。重新開機會結束它",
+                      f"  {label} stays paused (Defender: {scan_result(rc)}). Restarting the computer ends it"))
+            continue
+        ok = set_paused(pid, False)
+        log.info(tr("恢復被暫停的程式 %s：%s", "Resuming paused program %s: %s"), label, ok)
+        report(tr(f"  已恢復 {label}", f"  Resumed {label}") if ok else
+               tr(f"  無法恢復 {label}；重新開機會結束它", f"  Could not resume {label}; restarting the computer ends it"))
+
+
+# Programs, scripts and archives that arrive in Downloads (any subfolder) or directly on the Desktop are
+# scanned once they are complete. Defender's real-time protection checks them as well; this scans each
+# finished file once more and tells the user plainly when Defender finds something.
+SCAN_EXTS = {".exe", ".msi", ".scr", ".com", ".pif", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse",
+             ".wsf", ".hta", ".jar", ".dll", ".lnk", ".zip", ".rar", ".7z", ".iso", ".img"}
+SCAN_QUEUE_MAX = 50  # more files than this waiting (e.g. a whole folder unpacked): the rest are skipped
+
+
+def wait_until_written(path, settle=2.0, limit=120.0) -> bool:
+    """Wait until a file stops changing (a download or copy has finished); False if it vanishes or stays busy."""
+    last, end = None, time.time() + limit
+    while time.time() < end:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return False
+        now = (st.st_size, st.st_mtime_ns)
+        if now == last:
+            return True
+        last = now
+        time.sleep(settle)
+    return False
+
+
+class DownloadScanner:
+    """Scan new programs, scripts and archives in Downloads / on the Desktop with Defender, one at a time."""
+
+    def __init__(self, notify=None):
+        self.notify = notify or self._alert
+        self.roots = [(norm(_known_folder("Downloads")), True), (norm(_known_folder("Desktop")), False)]
+        self.pending = deque()
+        self.cond = threading.Condition()
+
+    def wanted(self, path) -> bool:
+        if Path(path).suffix.lower() not in SCAN_EXTS:
+            return False
+        p = norm(path)
+        return any(os.path.dirname(p) == root or (deep and p.startswith(root + os.sep))
+                   for root, deep in self.roots)
+
+    def add(self, path):
+        if not self.wanted(path):
+            return
+        with self.cond:
+            if any(norm(q) == norm(path) for q in self.pending):
+                return
+            if len(self.pending) >= SCAN_QUEUE_MAX:
+                log.warning(tr("等待掃描的檔案太多，略過：%s", "Too many files waiting to be scanned; skipping %s"), path)
+                return
+            self.pending.append(path)
+            self.cond.notify()
+
+    def start(self):
+        threading.Thread(target=self._work, daemon=True).start()
+
+    def _work(self):
+        while True:
+            with self.cond:
+                while not self.pending:
+                    self.cond.wait()
+                path = self.pending.popleft()
+            try:
+                self.scan(path)
+            except Exception:
+                log.exception(tr("掃描新檔案時發生錯誤", "Error while scanning a new file"))
+
+    def scan(self, path):
+        if not wait_until_written(path):
+            return  # gone again (perhaps already removed by Defender's real-time protection) or never finished
+        rc = defender_scan(path, 300)
+        log.info(tr("Defender 掃描新檔案 %s：%s", "Defender scan of new file %s: %s"), path, scan_result(rc))
+        if rc == 2:
+            self.notify(path)
+
+    @staticmethod
+    def _alert(path):
+        alert(tr("RansomGuard：Defender 發現威脅", "RansomGuard: Defender found a threat"),
+              tr(f"新檔案含有威脅：\n{path}\n\nMicrosoft Defender 正在處理（通常會隔離或刪除）。請不要開啟這個檔案。",
+                 f"A new file contains a threat:\n{path}\n\nMicrosoft Defender is handling it (it usually "
+                 "quarantines or deletes it). Do not open this file."))
 
 
 # ---------------- Network control (Windows) ----------------
@@ -1199,6 +1506,8 @@ def restore_network(report=print) -> bool:
     if network_cut(st):
         time.sleep(3)
         _run([sys_exe("ipconfig.exe"), "/renew"])
+    if st.get("paused"):
+        resume_paused(st["paused"], report)
     if ok:
         save_state({})
     else:
@@ -1988,13 +2297,22 @@ def gui(auto_update=False):
 def respond(reason: str, dry_run: bool):
     """Handle a trigger. Returns the full-screen warning process (may be None)."""
     log.critical(tr("偵測到疑似勒索病毒行為：%s", "Possible ransomware behavior detected: %s"), reason)
+    # pause the encrypting program before anything else: every second it keeps running costs files
+    found = pause_writers(dry_run) if PAUSE_ON_TRIGGER and IS_WINDOWS else []
     if dry_run:
         log.warning(tr("[測試模式] 正式模式下，此時會切斷網路",
                        "[Test mode] In normal mode the network would be cut off now"))
-        return fullscreen_alert(reason, "test")
+        return fullscreen_alert(reason, "test", paused=found)
+    if any(p["paused"] for p in found):
+        st = load_state()  # restore_network() resumes them if the user calls it a false alarm
+        st["paused"] = st.get("paused", []) + [p for p in found if p["paused"]]
+        save_state(st)
+    if DEFENDER_SCAN_ON_TRIGGER and IS_WINDOWS:
+        threading.Thread(target=ask_defender, args=([p["path"] for p in found if p["path"]],),
+                         daemon=True).start()
     ok = disconnect_network()
     init_lang()  # use the language most recently chosen in the control panel (the monitor may predate the change)
-    proc = fullscreen_alert(reason, "cut" if ok else "partial")
+    proc = fullscreen_alert(reason, "cut" if ok else "partial", paused=found)
     if HIBERNATE_ON_TRIGGER:
         log.critical(tr("依設定立即休眠", "Hibernating now, as configured"))
         time.sleep(3)  # let the warning appear first, so it is there after waking up
@@ -2057,7 +2375,11 @@ def run(args):
                     time.sleep(60)
             stop.set()
 
-    handler = make_handler(canaries, on_trigger, args.dry_run)
+    scanner = None
+    if DEFENDER_SCAN_DOWNLOADS and IS_WINDOWS and MPCMDRUN.is_file():
+        scanner = DownloadScanner()
+        scanner.start()
+    handler = make_handler(canaries, on_trigger, args.dry_run, scanner.add if scanner else None)
 
     def start_observer():
         obs = Observer()

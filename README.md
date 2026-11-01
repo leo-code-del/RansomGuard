@@ -44,16 +44,18 @@ Any one of these triggers it:
 
 Watched folders: Desktop, Documents, Pictures, Downloads, Videos, Music.
 
+New programs, scripts and archives (`.exe`, `.msi`, `.js`, `.zip`...) in Downloads or directly on the Desktop are also scanned with Microsoft Defender once they finish downloading. If Defender finds a threat, a message tells you. This does not cut the network, because Defender removes the file.
+
 > Do not open, move or delete the canary files (names containing `canary_do_not_delete`). Doing so cuts the network.
 
 ## When it triggers
 
-1. All network adapters are disabled (the firewall is used as a fallback), and a red warning covers every screen.
+1. The programs writing the most data are paused, which stops the encryption, and Microsoft Defender scans them. Windows' own processes, Defender and the desktop are never paused. Then all network adapters are disabled (the firewall is used as a fallback), and a red warning covers every screen that names the paused programs.
 2. **Do not restore the network**, and do not plug in backup drives or USB sticks.
 3. If files are still being renamed or becoming unreadable one by one, hold the power button to force the computer off immediately.
 4. Take a photo of the ransom note with your phone, and use your phone to change the passwords of important accounts such as email and banking.
 
-**If it was a false alarm** (e.g. you touched a canary file yourself): open "RansomGuard" on the desktop and click **Restore network and restart monitoring**.
+**If it was a false alarm** (e.g. you touched a canary file yourself): open "RansomGuard" on the desktop and click **Restore network and restart monitoring**. Paused programs are scanned by Defender again and resumed if it finds nothing. A program that stays paused ends when you restart the computer.
 
 ## Update
 

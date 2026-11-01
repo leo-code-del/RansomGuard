@@ -524,6 +524,18 @@ class NetworkTests(TempDirTest):
         with mock.patch.object(rg, "is_admin", lambda: False):
             self.assertFalse(rg.restore_network(lambda m: None))
 
+    def test_restore_resumes_paused_programs(self):
+        self.use(FakeNetwork())
+        rg.disconnect_network()
+        st = rg.load_state()
+        st["paused"] = [{"pid": 7, "name": "a.exe", "path": r"C:\x\a.exe", "paused": True, "result": "paused"}]
+        rg.save_state(st)
+        got = []
+        with mock.patch.object(rg, "resume_paused", lambda paused, report: got.append(paused)):
+            self.assertTrue(rg.restore_network(lambda m: None))
+        self.assertEqual(got, [st["paused"]])
+        self.assertEqual(rg.load_state(), {})
+
 
 # ---------------------------------------------------------------- install / update
 class FakeResponse(io.BytesIO):
@@ -761,6 +773,172 @@ class ProcessMonitorTests(unittest.TestCase):
         old_script = ("\n[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"
                       "$q = \"SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'\"\n")
         self.assertEqual(rg.ps_encoded_args(old_script)[-1][:120], rg.ps_encoded_args(rg.PROC_PS1)[-1][:120])
+
+
+# ---------------------------------------------------------------- pausing the program that writes the most
+WIN = os.environ.get("SystemRoot", r"C:\Windows")
+
+
+class PauseTests(TempDirTest):
+    def patch(self, name, value):
+        p = mock.patch.object(rg, name, value)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def fake_writers(self, rows, paths):
+        """write_counters() sees `rows` [(pid, name)] each write 100 times / 1 MB during the sample."""
+        counters = iter([{}, {pid: (name, 100, 10 ** 6) for pid, name in rows}])
+        self.patch("write_counters", lambda: next(counters))
+        self.patch("process_path", lambda pid: paths.get(pid, ""))
+        self.calls = []
+        self.patch("set_paused", lambda pid, paused: self.calls.append((pid, paused)) or True)
+        p = mock.patch.object(rg.time, "sleep")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_heaviest_writers(self):
+        kb = 1024
+        before = {1: ("a.exe", 100, 0), 2: ("b.exe", 0, 0), 3: ("old.exe", 0, 0), 4: ("quiet.exe", 0, 0)}
+        after = {1: ("a.exe", 200, 900 * kb),
+                 2: ("b.exe", 500, 5000 * kb),       # the most data comes first
+                 3: ("new.exe", 30, 300 * kb),       # PID reused by another program: everything counts
+                 4: ("quiet.exe", 10, 10000 * kb),   # too few writes
+                 5: ("started.exe", 50, 400 * kb),   # started during the sample
+                 6: ("small.exe", 500, 100 * kb)}    # too little data
+        self.assertEqual([r[0] for r in rg.heaviest_writers(before, after)], [2, 1, 5, 3])
+        self.assertEqual(rg.heaviest_writers(before, after)[1], (1, "a.exe", 100, 900 * kb))
+
+    def test_windows_processes_are_trusted_only_in_their_own_folder(self):
+        self.assertTrue(rg.trusted_process("svchost.exe", rf"{WIN}\System32\svchost.exe"))
+        self.assertTrue(rg.trusted_process("Explorer.EXE", rf"{WIN}\explorer.exe"))
+        self.assertTrue(rg.trusted_process("MsMpEng.exe", ""))  # protected: its path can't be read
+        self.assertFalse(rg.trusted_process("svchost.exe", r"C:\Users\u\AppData\Local\Temp\svchost.exe"))
+        self.assertFalse(rg.trusted_process("svchost.exe", WIN + r"x\svchost.exe"))
+        self.assertFalse(rg.trusted_process("powershell.exe",
+                                            rf"{WIN}\System32\WindowsPowerShell\v1.0\powershell.exe"))
+
+    def test_heaviest_writers_are_paused_but_not_windows(self):
+        self.fake_writers([(1, "svchost.exe"), (2, "evil.exe"), (3, "a.exe"), (4, "b.exe"), (5, "c.exe")],
+                          {1: rf"{WIN}\System32\svchost.exe", 2: r"C:\Users\u\evil.exe"})
+        self.patch("PAUSE_MAX", 3)
+        found = rg.pause_writers(dry_run=False)
+        self.assertEqual([p["pid"] for p in found], [2, 3, 4])  # at most PAUSE_MAX
+        self.assertEqual(self.calls, [(2, True), (3, True), (4, True)])
+        self.assertEqual(found[0], {"pid": 2, "name": "evil.exe", "path": r"C:\Users\u\evil.exe",
+                                    "paused": True, "result": "paused"})
+
+    def test_test_mode_pauses_nothing(self):
+        self.fake_writers([(2, "evil.exe")], {2: r"C:\Users\u\evil.exe"})
+        found = rg.pause_writers(dry_run=True)
+        self.assertEqual(self.calls, [])
+        self.assertEqual([(p["pid"], p["paused"]) for p in found], [(2, False)])
+
+    def test_trigger_pauses_saves_and_asks_defender(self):
+        evil = {"pid": 7, "name": "evil.exe", "path": r"C:\x\evil.exe", "paused": True, "result": "paused"}
+        alerts, asked, done = [], [], threading.Event()
+        self.patch("app_dir", lambda: self.dir)
+        self.patch("IS_WINDOWS", True)
+        self.patch("pause_writers", lambda dry_run: [evil])
+        self.patch("disconnect_network", lambda: True)
+        self.patch("fullscreen_alert", lambda reason, status, paused=(): alerts.append((status, paused)))
+        self.patch("ask_defender", lambda paths: (asked.append(paths), done.set()))
+        self.addCleanup(rg.init_lang, "en")
+        rg.respond("test", dry_run=False)
+        done.wait(5)
+        self.assertEqual(rg.load_state()["paused"], [evil])
+        self.assertEqual(asked, [[r"C:\x\evil.exe"]])
+        self.assertEqual(alerts, [("cut", [evil])])
+
+    def test_false_alarm_resumes_only_clean_programs(self):
+        paused = [{"pid": 1, "name": "ok.exe", "path": r"C:\a\ok.exe"},
+                  {"pid": 2, "name": "bad.exe", "path": r"C:\a\bad.exe"},
+                  {"pid": 3, "name": "gone.exe", "path": r"C:\a\gone.exe"},  # its PID now belongs to another program
+                  {"pid": 4, "name": "unknown.exe", "path": ""}]
+        self.fake_writers([], {1: r"C:\a\ok.exe", 2: r"C:\a\bad.exe", 3: r"C:\b\new.exe", 4: r"C:\c.exe"})
+        self.patch("defender_scan", lambda path: {r"C:\a\ok.exe": 0, r"C:\a\bad.exe": 2}[path])
+        msgs = []
+        rg.resume_paused(paused, msgs.append)
+        self.assertEqual(self.calls, [(1, False)])
+        self.assertEqual(len(msgs), 5)
+        self.assertIn("bad.exe (PID 2) stays paused", msgs[2])
+
+    def test_real_writer_is_found_paused_and_resumed(self):
+        # a harmless child that keeps overwriting the start of one file in a temp folder
+        code = ("import os, sys, time\nprint(os.getpid(), flush=True)\nf = open(sys.argv[1], 'wb', buffering=0)\n"
+                "while True:\n    f.seek(0); f.write(b'x' * 65536); time.sleep(0.005)\n")
+        p = subprocess.Popen([sys.executable, "-c", code, str(self.dir / "w.bin")], stdout=subprocess.PIPE)
+        self.addCleanup(p.stdout.close)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        pid = int(p.stdout.readline())
+        with mock.patch.object(rg.os, "getpid", lambda: 0):  # write_counters() skips this program's children
+            before = rg.write_counters()
+            time.sleep(1)
+            after = rg.write_counters()
+            self.assertIn(pid, [r[0] for r in rg.heaviest_writers(before, after)])
+            self.assertTrue(rg.process_path(pid).lower().endswith(".exe"))
+            self.assertTrue(rg.set_paused(pid, True))
+            time.sleep(0.3)
+            w1 = rg.write_counters()[pid][1]
+            time.sleep(0.5)
+            self.assertEqual(rg.write_counters()[pid][1], w1, "a paused process must not write")
+            self.assertTrue(rg.set_paused(pid, False))
+            time.sleep(0.5)
+            self.assertGreater(rg.write_counters()[pid][1], w1, "a resumed process writes again")
+
+
+# ---------------------------------------------------------------- scanning new downloads with Defender
+class DownloadScanTests(TempDirTest):
+    def setUp(self):
+        super().setUp()
+        self.dl, self.desk = self.dir / "Downloads", self.dir / "Desktop"
+        p = mock.patch.object(rg, "_known_folder", lambda name: self.dir / name)
+        p.start()
+        self.addCleanup(p.stop)
+        self.found = []
+        self.s = rg.DownloadScanner(self.found.append)
+
+    def test_which_files_are_scanned(self):
+        for path in (self.dl / "setup.exe", self.dl / "sub" / "invoice.js", self.dl / "a.ZIP",
+                     self.desk / "tool.msi", self.desk / "Shortcut.lnk"):
+            self.assertTrue(self.s.wanted(path), path)
+        for path in (self.dl / "photo.jpg", self.dl / "setup.exe.crdownload", self.desk / "project" / "app.js",
+                     self.dir / "Documents" / "setup.exe", self.dir / "Downloads2" / "setup.exe"):
+            self.assertFalse(self.s.wanted(path), path)
+
+    def test_queue_skips_duplicates_and_overflow(self):
+        self.s.add(self.dl / "a.exe")
+        self.s.add(self.dl / "A.EXE")
+        self.s.add(self.dl / "a.txt")
+        self.assertEqual(len(self.s.pending), 1)
+        with mock.patch.object(rg, "SCAN_QUEUE_MAX", 3):
+            for i in range(5):
+                self.s.add(self.dl / f"b{i}.exe")
+        self.assertEqual(len(self.s.pending), 3)
+
+    def test_only_threats_are_reported(self):
+        codes = {"clean.exe": 0, "evil.exe": 2, "broken.exe": None}
+        with mock.patch.object(rg, "wait_until_written", lambda path: True), \
+                mock.patch.object(rg, "defender_scan", lambda path, timeout: codes[Path(path).name]):
+            for name in codes:
+                self.s.scan(str(self.dl / name))
+        with mock.patch.object(rg, "wait_until_written", lambda path: False), \
+                mock.patch.object(rg, "defender_scan", lambda path, timeout: self.fail("vanished files are not scanned")):
+            self.s.scan(str(self.dl / "gone.exe"))
+        self.assertEqual(self.found, [str(self.dl / "evil.exe")])
+
+    def test_wait_until_written(self):
+        f = Path(self.file("Downloads/a.exe", b"MZ"))
+        self.assertTrue(rg.wait_until_written(f, settle=0.05))
+        self.assertFalse(rg.wait_until_written(self.dl / "missing.exe", settle=0.05))
+
+    def test_handler_reports_new_and_renamed_files(self):
+        seen = []
+        h = rg.make_handler([], lambda r: None, dry_run=True, on_new_file=seen.append)
+        h.on_any_event(FileCreatedEvent(str(self.dl / "a.exe")))
+        h.on_any_event(FileMovedEvent(str(self.dl / "b.exe.crdownload"), str(self.dl / "b.exe")))
+        h.on_any_event(FileModifiedEvent(str(self.dl / "c.exe")))
+        self.assertEqual(seen, [str(self.dl / "a.exe"), str(self.dl / "b.exe")])
 
 
 if __name__ == "__main__":
