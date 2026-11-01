@@ -115,12 +115,18 @@ The built file is `dist\RansomGuard.exe`.
 
 ### Publishing a new version
 
-1. Change `VERSION` in `ransom_guard.py`, e.g. to `"1.3.1"`.
-2. Rebuild, commit and push.
+1. Change `VERSION` in `ransom_guard.py`, e.g. to `"1.4.3"`.
+2. Run the tests, rebuild, commit and push.
 3. Create a release with the exe attached:
 
    ```
-   gh release create v1.3.1 dist\RansomGuard.exe --title "RansomGuard 1.3.1" --notes "What changed..."
+   gh release create v1.4.3 dist\RansomGuard.exe --title "RansomGuard 1.4.3" --notes-file notes.md
+   ```
+
+4. Only the newest version is offered for download. Remove the exe from the previous release and put a notice at the top of its notes (the notes stay readable):
+
+   ```
+   gh release delete-asset v1.4.2 RansomGuard.exe --yes
    ```
 
 The download button in the README always points to the latest version, so it never needs editing.

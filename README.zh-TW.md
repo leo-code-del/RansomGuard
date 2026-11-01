@@ -115,12 +115,18 @@ python -m unittest discover -s tests -v
 
 ### 發布新版
 
-1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.3.1"`。
-2. 重新打包，提交並推送。
+1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.4.3"`。
+2. 執行測試、重新打包，提交並推送。
 3. 建立 Release 並附上 exe：
 
    ```
-   gh release create v1.3.1 dist\RansomGuard.exe --title "RansomGuard 1.3.1" --notes "What changed..."
+   gh release create v1.4.3 dist\RansomGuard.exe --title "RansomGuard 1.4.3" --notes-file notes.md
+   ```
+
+4. 只提供最新版本下載：移除上一版附的 exe，並在它的說明最上方加上停止提供下載的提示（說明仍可閱讀）：
+
+   ```
+   gh release delete-asset v1.4.2 RansomGuard.exe --yes
    ```
 
 README 的下載按鈕永遠指向最新版本，不需要修改。

@@ -60,7 +60,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.4.1"  # bump this for a new release and create the matching GitHub Release (v1.4.1)
+VERSION = "1.4.2"  # bump this for a new release and create the matching GitHub Release (v1.4.2)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -1669,9 +1669,7 @@ def gui():
 
         def pick(lang):
             set_lang(lang)
-            build()
-            refresh()
-            center()
+            show_panel()
 
         default = system_lang()
         for lang, text, font in (("en", "English", "Segoe UI"), ("zh", "中文(繁體)", "Microsoft JhengHei UI")):
@@ -1683,6 +1681,23 @@ def gui():
                  font=("Microsoft JhengHei UI", 9), fg=C["muted"], bg=C["bg"],
                  justify="left").pack(anchor="w", pady=(px(4), 0))
 
+    def show_panel():
+        """Show the control panel at one fixed size that fits both languages, so switching the
+        language doesn't resize the window (English text is wider, JhengHei lines are taller)."""
+        global LANG
+        chosen, sizes = LANG, []
+        root.withdraw()
+        for LANG in ("en", "zh"):
+            build()
+            root.update_idletasks()
+            sizes.append((root.winfo_reqwidth(), root.winfo_reqheight()))
+        LANG = chosen
+        build()
+        root.geometry(f"{max(s[0] for s in sizes)}x{max(s[1] for s in sizes)}")
+        refresh()
+        center()
+        root.deiconify()
+
     def build():
         if "frame" in w:
             w["frame"].destroy()
@@ -1690,7 +1705,7 @@ def gui():
         w["font"] = FONT = tr("Microsoft JhengHei UI", "Segoe UI")
         root.title(tr("RansomGuard 控制台", "RansomGuard Control Panel"))
         w["frame"] = frame = tk.Frame(root, bg=C["bg"])
-        frame.pack(fill="both")
+        frame.pack(fill="both", expand=True)
 
         # header
         hdr = tk.Frame(frame, bg=C["header"])
@@ -1711,7 +1726,7 @@ def gui():
                                                                     pady=(px(2), px(16)))
 
         body = tk.Frame(frame, bg=C["bg"])
-        body.pack(fill="both", padx=px(22), pady=(px(18), px(16)))
+        body.pack(fill="both", expand=True, padx=px(22), pady=(px(18), px(16)))
 
         # status cards
         cards = tk.Frame(body, bg=C["bg"])
@@ -1773,7 +1788,7 @@ def gui():
             body, width=60, height=9, font=(FONT, 10), wrap="word", relief="flat", bd=0,
             bg=C["card"], fg=C["text"], highlightthickness=1, highlightbackground=C["border"],
             highlightcolor=C["border"], padx=px(10), pady=px(8))
-        out.pack(fill="x")
+        out.pack(fill="both", expand=True)  # takes up any spare room of the fixed-size window
         out.tag_config("hint", foreground=C["muted"])
         out.tag_config("err", foreground=C["bad"])
         write(tr("按上方按鈕執行操作，進度會顯示在這裡。", "Click a button above; progress is shown here."),
@@ -1787,12 +1802,11 @@ def gui():
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     if _LANG_ARG or saved_lang():
-        build()
-        refresh()
+        show_panel()
     else:
         choose_lang()
+        center()
     pump()
-    center()
     root.mainloop()
 
 
