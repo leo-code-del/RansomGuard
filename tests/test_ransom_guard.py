@@ -646,6 +646,30 @@ class UpdateTests(TempDirTest):
                 rg.install(lambda m: None)
         self.assertEqual(started, [1])
 
+    def uninstall(self):
+        msgs = []
+        with mock.patch.object(rg, "stop_monitor", lambda: None), mock.patch.object(rg, "_ps", lambda c: (0, "", "")), \
+                mock.patch.object(rg, "task_state", lambda: ""), mock.patch.object(rg, "remove_canaries", lambda: None), \
+                mock.patch.object(rg, "desktop_lnk", lambda: self.dir / "RansomGuard.lnk"):
+            rg.uninstall(msgs.append)
+        return msgs
+
+    def test_uninstall_removes_the_whole_folder(self):
+        for name in ("icon.ico", "RansomGuard.old-1234abcd.exe"):
+            (rg.INSTALL_DIR / name).write_bytes(b"x")
+        self.uninstall()
+        self.assertFalse(rg.INSTALL_DIR.exists())
+
+    def test_uninstall_with_a_file_still_running(self):
+        running = rg.INSTALL_DIR / "RansomGuard.old-running.exe"
+        shutil.copy2(os.path.join(os.environ["SystemRoot"], "System32", "PING.EXE"), running)
+        proc = subprocess.Popen([str(running), "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        msgs = self.uninstall()
+        self.assertFalse(rg.INSTALL_EXE.exists())
+        self.assertTrue(any("next restart" in m for m in msgs), msgs)
+
     def test_cleanup_old_files(self):
         appdir = self.dir / "app"
         appdir.mkdir()

@@ -95,7 +95,7 @@ RansomGuard.exe --lang en    Use English for this run (zh = 中文(繁體))
 pip install watchdog pyinstaller
 python ransom_guard.py --gui
 python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon ..\icon.ico ^
-       --distpath dist --workpath build --specpath build ransom_guard.py
+       --add-data "..\icon.ico;." --distpath dist --workpath build --specpath build ransom_guard.py
 ```
 
 Run the tests (they only use temporary folders and never touch the network or the installed program):
