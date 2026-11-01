@@ -224,7 +224,8 @@ class HandlerTests(TempDirTest):
 
     def test_canaries_are_planted(self):
         self.assertEqual(sorted(p.name for p in self.canaries), sorted(rg.CANARY_NAMES))
-        self.assertTrue(all(p.read_bytes() == rg.CANARY_BYTES for p in self.canaries))
+        self.assertTrue(all(p.read_bytes() == rg.canary_bytes(p) for p in self.canaries))
+        self.assertEqual({p.read_bytes()[:4] for p in self.canaries}, {b"PK\x03\x04"})
 
     def test_canary_deleted(self):
         self.h.on_any_event(FileDeletedEvent(str(self.canaries[0])))
@@ -305,7 +306,37 @@ class HandlerTests(TempDirTest):
         with mock.patch.object(rg, "alert") as alert:
             again = rg.plant_canaries([c.parent])
         alert.assert_called_once()
-        self.assertEqual(Path(again[0]).read_bytes(), rg.CANARY_BYTES)
+        self.assertEqual(Path(again[0]).read_bytes(), rg.canary_bytes(again[0]))
+
+    def test_canary_files_are_real_office_files_that_never_change(self):
+        import zipfile
+        from xml.dom import minidom
+        # the content must stay byte for byte the same in every version (and with every Python that builds it):
+        # otherwise an update would report every installed canary file as modified
+        self.assertEqual(hashlib.sha256(rg.CANARY_DOCX).hexdigest(),
+                         "379c0bfee8db3ce62250e8c65ef5c37fdbc2726fc2382a99452eb6d1573c1e7b")
+        self.assertEqual(hashlib.sha256(rg.CANARY_XLSX).hexdigest(),
+                         "e3de85d72ecc82201c17ba04d12ac02cf23a865d09985b0d2f4f9b540441fc34")
+        for data, main in ((rg.CANARY_DOCX, "word/document.xml"), (rg.CANARY_XLSX, "xl/worksheets/sheet1.xml")):
+            z = zipfile.ZipFile(io.BytesIO(data))
+            for part in z.namelist():
+                minidom.parseString(z.read(part))
+            self.assertIn("請直接關閉，不要修改", z.read(main).decode("utf-8"))
+        self.assertEqual(rg.canary_bytes(r"C:\d\!!!_canary_do_not_delete.XLSX"), rg.CANARY_XLSX)
+        self.assertEqual(rg.canary_bytes(r"C:\d\zzz_canary_do_not_delete.docx"), rg.CANARY_DOCX)
+
+    def test_old_plain_text_canaries_are_accepted_then_upgraded(self):
+        for c in self.canaries:
+            c.write_bytes(rg.LEGACY_CANARY_BYTES)
+        self.assertIsNone(rg.check_canaries(self.canaries))
+        self.h.on_any_event(FileModifiedEvent(str(self.canaries[0])))
+        self.assertEqual(self.fired, [])
+        with mock.patch.object(rg, "alert") as alert:
+            rg.plant_canaries([self.dir / "docs"])  # test mode: another monitor may be watching, keep them
+            self.assertEqual(self.canaries[0].read_bytes(), rg.LEGACY_CANARY_BYTES)
+            rg.plant_canaries([self.dir / "docs"], upgrade=True)
+        alert.assert_not_called()
+        self.assertTrue(all(c.read_bytes() == rg.canary_bytes(c) for c in self.canaries))
 
     def test_remove_canaries_handles_new_and_legacy_names(self):
         for n in rg.LEGACY_CANARY_NAMES:

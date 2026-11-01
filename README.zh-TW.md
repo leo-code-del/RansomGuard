@@ -46,7 +46,7 @@ Defender 有時會把 RansomGuard.exe 判定為威脅（例如 `Trojan:Win32/Bea
 
 「下載」資料夾和桌面上新出現的程式、腳本和壓縮檔（`.exe`、`.msi`、`.js`、`.zip` 等）下載完成後，也會用 Microsoft Defender 掃描。Defender 發現威脅時會跳出訊息通知你。這種情況不會斷網，因為 Defender 會把檔案移除。
 
-> 請不要開啟、移動或刪除誘餌檔（檔名含 `canary_do_not_delete`），那樣會觸發斷網。
+> 請不要修改、移動或刪除誘餌檔（檔名含 `canary_do_not_delete`），那樣會觸發斷網。用 Word 或 Excel 打開會看到說明文字，請直接關閉、不要儲存；Word 和 Excel 也會建議以唯讀方式開啟。
 
 ## 觸發之後
 

@@ -50,6 +50,7 @@ import argparse
 import base64
 import ctypes
 import hashlib
+import io
 import json
 import logging
 import math
@@ -63,11 +64,12 @@ import threading
 import time
 import urllib.request  # imported up front: the update must not depend on loading modules later
 import uuid
+import zipfile
 from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.6.0"  # bump this for a new release and create the matching GitHub Release (v1.6.0)
+VERSION = "1.6.1"  # bump this for a new release and create the matching GitHub Release (v1.6.1)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -94,10 +96,109 @@ DEFENDER_SCAN_DOWNLOADS = True   # have Defender scan new programs, scripts and 
 CANARY_NAMES = ["!!!_canary_do_not_delete.docx", "!!!_canary_do_not_delete.xlsx", "zzz_canary_do_not_delete.docx"]
 # names used before v1.3.0; the monitor deletes them when it starts
 LEGACY_CANARY_NAMES = ["!!!_canary_勿刪.docx", "!!!_canary_勿刪.xlsx", "zzz_canary_勿刪.docx"]
-CANARY_BYTES = ((
+# what canary files contained before v1.6.1 (plain text, so Word and Excel called them corrupt); still
+# accepted as intact, and replaced by the current content when the monitor starts
+LEGACY_CANARY_BYTES = ((
     "This is a ransomware canary file (RansomGuard). Do not open, modify, move or delete it.\n"
     "這是防勒索病毒的誘餌檔（RansomGuard），請勿開啟、修改、移動或刪除。\n"
 ) * 200).encode("utf-8")
+
+# Canary files are real Word / Excel files: opening one explains what it is, and Word and Excel suggest
+# opening it read-only. Stored uncompressed with fixed timestamps, so every version writes the same bytes.
+# (heading?, text); the text must not contain & < >
+_CANARY_TEXT = [
+    (True, "RansomGuard 誘餌檔：請直接關閉，不要修改"),
+    (True, "RansomGuard canary file: please close it without changes"),
+    (False, "這個檔案用來偵測勒索病毒。修改、儲存、移動或刪除它，RansomGuard 會以為電腦中了勒索病毒，並自動切斷網路。"),
+    (False, "This file detects ransomware. If it is modified, saved, moved or deleted, RansomGuard assumes the "
+            "computer has ransomware and cuts off the network."),
+    (False, "如果不小心觸發了：開啟桌面上的「RansomGuard」，按「恢復網路並重新開啟監控」。"),
+    (False, "If that happens by mistake: open \"RansomGuard\" on the desktop and click \"Restore network and "
+            "restart monitoring\"."),
+]
+_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_RELS_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+_OOXML_CT = "application/vnd.openxmlformats-officedocument."
+
+
+def _ooxml(main: str, parts: dict) -> bytes:
+    """A minimal Office Open XML package. main: path of the main part; parts: {path: (content type, xml)}."""
+    types = "".join(f'<Override PartName="/{n}" ContentType="{_OOXML_CT}{ct}"/>'
+                    for n, (ct, _) in parts.items() if ct)  # .rels parts are covered by the Default
+    files = {
+        "[Content_Types].xml": f'<Types xmlns="{_CT_NS}"><Default Extension="rels" ContentType='
+                               f'"application/vnd.openxmlformats-package.relationships+xml"/>'
+                               f'<Default Extension="xml" ContentType="application/xml"/>{types}</Types>',
+        "_rels/.rels": f'<Relationships xmlns="{_RELS_NS}"><Relationship Id="rId1" '
+                       f'Type="{_REL}/officeDocument" Target="{main}"/></Relationships>',
+        **{n: xml for n, (_, xml) in parts.items()},
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        for name, xml in files.items():
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 0  # otherwise it depends on the system that built the program
+            z.writestr(info, ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + xml).encode("utf-8"))
+    return buf.getvalue()
+
+
+def _rels(*rels) -> str:
+    return f'<Relationships xmlns="{_RELS_NS}">' + "".join(
+        f'<Relationship Id="rId{i}" Type="{_REL}/{t}" Target="{target}"/>'
+        for i, (t, target) in enumerate(rels, 1)) + "</Relationships>"
+
+
+def _docx_par(head: bool, text: str) -> str:
+    size = ('<w:b/><w:color w:val="C00000"/><w:sz w:val="40"/><w:szCs w:val="40"/>' if head else
+            '<w:sz w:val="28"/><w:szCs w:val="28"/>')
+    return f"<w:p><w:r><w:rPr>{size}</w:rPr><w:t>{text}</w:t></w:r></w:p>"
+
+
+def _xlsx_row(i: int, head: bool, text: str) -> str:
+    style = ' s="1"' if head else ""  # cell format 1 = the bold red font in styles.xml
+    return f'<row r="{i}"><c r="A{i}" t="inlineStr"{style}><is><t>{text}</t></is></c></row>'
+
+
+_WML = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+_SML = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+CANARY_DOCX = _ooxml("word/document.xml", {
+    "word/document.xml": ("wordprocessingml.document.main+xml", f"<w:document {_WML}><w:body>"
+                          + "".join(_docx_par(*t) for t in _CANARY_TEXT) + "</w:body></w:document>"),
+    "word/_rels/document.xml.rels": ("", _rels(("settings", "settings.xml"))),
+    "word/settings.xml": ("wordprocessingml.settings+xml",
+                          f'<w:settings {_WML}><w:writeProtection w:recommended="1"/></w:settings>'),
+})
+CANARY_XLSX = _ooxml("xl/workbook.xml", {
+    "xl/workbook.xml": ("spreadsheetml.sheet.main+xml",
+                        f'<workbook {_SML} xmlns:r="{_REL}"><fileSharing readOnlyRecommended="1"/>'
+                        '<sheets><sheet name="RansomGuard" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+    "xl/_rels/workbook.xml.rels": ("", _rels(("worksheet", "worksheets/sheet1.xml"), ("styles", "styles.xml"))),
+    "xl/worksheets/sheet1.xml": ("spreadsheetml.worksheet+xml",
+                                 f'<worksheet {_SML}><cols><col min="1" max="1" width="120" customWidth="1"/></cols>'
+                                 "<sheetData>" + "".join(_xlsx_row(i, *t) for i, t in enumerate(_CANARY_TEXT, 1))
+                                 + "</sheetData></worksheet>"),
+    "xl/styles.xml": ("spreadsheetml.styles+xml",
+                      f'<styleSheet {_SML}><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
+                      '<font><b/><sz val="16"/><color rgb="FFC00000"/><name val="Calibri"/></font></fonts>'
+                      '<fills count="2"><fill><patternFill patternType="none"/></fill>'
+                      '<fill><patternFill patternType="gray125"/></fill></fills>'
+                      '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+                      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+                      '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+                      '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>'
+                      '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+                      "</styleSheet>"),
+})
+
+
+def canary_bytes(path) -> bytes:
+    """What the canary file at `path` contains."""
+    return CANARY_XLSX if Path(path).suffix.lower() == ".xlsx" else CANARY_DOCX
+
+
+def canary_intact(path, data: bytes) -> bool:
+    return data == canary_bytes(path) or data == LEGACY_CANARY_BYTES
 
 # Headers of common file formats (encryption almost always breaks them); (offset, bytes) = header not at the start
 _OLE = [b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"]
@@ -713,13 +814,16 @@ def default_canary_dirs():
     return [p for p in (_known_folder("Documents"), _known_folder("Pictures")) if p.is_dir()]
 
 
-def plant_canaries(dirs):
+def plant_canaries(dirs, upgrade=False):
+    """Create missing canary files and reset changed ones. upgrade: also replace the plain-text canary files of
+    versions before 1.6.1 (only when no other monitor can be watching them)."""
     paths = []
     for d in dirs:
         for name in CANARY_NAMES:
             p = Path(d) / name
             try:
-                if p.exists() and p.read_bytes() != CANARY_BYTES:
+                data = p.read_bytes() if p.exists() else None
+                if data is not None and not canary_intact(p, data):
                     log.warning(tr("誘餌檔內容和預期不同（程式沒執行時被改過？）：%s",
                                    "Canary file content is not what was expected "
                                    "(changed while the program was not running?): %s"), p)
@@ -727,8 +831,8 @@ def plant_canaries(dirs):
                           tr(f"誘餌檔在程式沒執行時被修改過：\n{p}\n\n請確認電腦是否異常。",
                              f"A canary file was modified while the program was not running:\n{p}\n\n"
                              "Please check whether something is wrong with this computer."))
-                if not p.exists() or p.read_bytes() != CANARY_BYTES:
-                    p.write_bytes(CANARY_BYTES)
+                if data is None or not canary_intact(p, data) or (upgrade and data != canary_bytes(p)):
+                    p.write_bytes(canary_bytes(p))
                 paths.append(p)
             except OSError as ex:
                 log.warning(tr("無法建立誘餌檔 %s：%s", "Could not create canary file %s: %s"), p, ex)
@@ -739,7 +843,7 @@ def check_canaries(canaries):
     """Describe the first canary file that is not intact; None if all are fine."""
     for p in canaries:
         try:
-            if Path(p).read_bytes() != CANARY_BYTES:
+            if not canary_intact(p, Path(p).read_bytes()):
                 return tr(f"誘餌檔內容被修改：{p}", f"Canary file was modified: {p}")
         except FileNotFoundError:
             if not Path(p).parent.is_dir():
@@ -925,7 +1029,7 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
                     return self.fire(tr(f"誘餌檔被改名或移動：{src} → {dest}",
                                         f"Canary file was renamed or moved: {src} → {dest}"))
                 try:
-                    if Path(src).read_bytes() != CANARY_BYTES:
+                    if not canary_intact(src, Path(src).read_bytes()):
                         return self.fire(tr(f"誘餌檔內容被修改：{src}", f"Canary file was modified: {src}"))
                 except OSError:
                     pass
@@ -2358,7 +2462,7 @@ def run(args):
     if not watch_dirs:
         log.error(tr("沒有可監控的資料夾", "No folders to watch"))
         sys.exit(1)
-    canaries = plant_canaries(watch_dirs if args.watch else default_canary_dirs())
+    canaries = plant_canaries(watch_dirs if args.watch else default_canary_dirs(), upgrade=not args.dry_run)
 
     stop = threading.Event()
 

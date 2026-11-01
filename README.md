@@ -46,7 +46,7 @@ Watched folders: Desktop, Documents, Pictures, Downloads, Videos, Music.
 
 New programs, scripts and archives (`.exe`, `.msi`, `.js`, `.zip`...) in Downloads or directly on the Desktop are also scanned with Microsoft Defender once they finish downloading. If Defender finds a threat, a message tells you. This does not cut the network, because Defender removes the file.
 
-> Do not open, move or delete the canary files (names containing `canary_do_not_delete`). Doing so cuts the network.
+> Do not modify, move or delete the canary files (names containing `canary_do_not_delete`). Doing so cuts the network. Opening one in Word or Excel shows a notice explaining this. Close it without saving; Word and Excel suggest opening it read-only.
 
 ## When it triggers
 
