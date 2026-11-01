@@ -34,7 +34,7 @@ RansomGuard — 偵測疑似勒索病毒的加密行為，觸發時自動切斷�
   python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard ^
          --distpath dist --workpath build --specpath build ransom_guard.py
 
-下載與更新：https://github.com/leo-code-del/copy/releases
+下載與更新：https://github.com/leo-code-del/RansomGuard/releases
   下載新版 RansomGuard.exe → 執行 → 按「安裝／更新並開始監控」
 """
 

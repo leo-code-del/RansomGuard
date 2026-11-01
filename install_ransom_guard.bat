@@ -4,12 +4,13 @@ if errorlevel 1 (
   powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
   exit /b
 )
+set "RG_DIR=%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText('%~f0',[Text.Encoding]::UTF8); Invoke-Expression ($s.Substring($s.IndexOf('#PS'+'START')+8))"
 exit /b
 #PSSTART
 # ===== 以下為 PowerShell：設定 RansomGuard 開機自動執行 =====
 $ErrorActionPreference = 'Continue'
-$Script   = 'D:\python\ransom_guard.py'
+$Script   = Join-Path $env:RG_DIR 'ransom_guard.py'  # 和這個 .bat 放在同一個資料夾
 $TaskName = 'RansomGuard'
 $LogFile  = Join-Path $env:LOCALAPPDATA 'RansomGuard\guard.log'
 
@@ -25,7 +26,7 @@ try {
     $cands = @()
     $cands += Get-ChildItem "$env:LOCALAPPDATA\Python\pythoncore-*\python.exe" -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -notmatch '\d+t-' } | Sort-Object FullName -Descending | ForEach-Object { $_.FullName }
     $cands += Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | ForEach-Object { $_.FullName }
-    $cands += @('D:\python\.venv\Scripts\python.exe', 'py', 'python')
+    $cands += @((Join-Path $env:RG_DIR '.venv\Scripts\python.exe'), 'py', 'python')
     foreach ($c in $cands) {
         try {
             $out = @(& $c -c 'import sys; print(sys.executable)' 2>$null)
@@ -48,7 +49,7 @@ try {
     Write-Host '[3/4] 建立登入時自動執行的排程工作...'
     $user = "$env:USERDOMAIN\$env:USERNAME"
     # -E 忽略 PYTHON* 環境變數、-P 不從程式所在資料夾載入模組（Python 3.11+），
-    # 避免有人在 D:\python 放假的 json.py 之類的檔案，被以系統管理員權限執行
+    # 避免有人在程式資料夾放假的 json.py 之類的檔案，被以系統管理員權限執行
     $hasP = "$(& $py -c 'import sys; print(int(sys.version_info >= (3, 11)))')".Trim() -eq '1'
     $pyArgs = if ($hasP) { '-E -P ' } else { '-E ' }
     $action = New-ScheduledTaskAction -Execute $pyw -Argument ($pyArgs + '"' + $Script + '"') -WorkingDirectory (Split-Path $Script)

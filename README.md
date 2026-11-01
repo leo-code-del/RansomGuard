@@ -2,9 +2,9 @@
 
 偵測勒索病毒的加密行為，一發現異常就**自動切斷網路**並跳出全螢幕警告，避免檔案繼續被加密、資料被傳出去。
 
-[![下載 RansomGuard.exe](https://img.shields.io/badge/下載-RansomGuard.exe-2563eb?style=for-the-badge&logo=windows)](https://github.com/leo-code-del/copy/releases/latest/download/RansomGuard.exe)
+[![下載 RansomGuard.exe](https://img.shields.io/badge/下載-RansomGuard.exe-2563eb?style=for-the-badge&logo=windows)](https://github.com/leo-code-del/RansomGuard/releases/latest/download/RansomGuard.exe)
 
-[所有版本與更新紀錄](https://github.com/leo-code-del/copy/releases)
+[所有版本與更新紀錄](https://github.com/leo-code-del/RansomGuard/releases)
 
 ## 安裝
 
@@ -42,7 +42,7 @@
 
 ## 更新
 
-到 [Releases](https://github.com/leo-code-del/copy/releases) 下載新版 `RansomGuard.exe`，執行後按 **安裝／更新並開始監控**，就會取代舊版。控制台左上角會顯示目前的版本號。
+到 [Releases](https://github.com/leo-code-del/RansomGuard/releases) 下載新版 `RansomGuard.exe`，執行後按 **安裝／更新並開始監控**，就會取代舊版。控制台左上角會顯示目前的版本號。
 
 ## 控制台功能
 
@@ -75,6 +75,14 @@ python ransom_guard.py --gui
 python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard ^
        --distpath dist --workpath build --specpath build ransom_guard.py
 ```
+
+不想用 exe、直接用 Python 執行的話，專案裡有幾個輔助檔案（要和 `ransom_guard.py` 放在同一個資料夾）：
+
+| 檔案 | 作用 |
+| --- | --- |
+| `install_ransom_guard.bat` | 用 Python 版安裝背景監控（自動找 Python、安裝 watchdog） |
+| `恢復網路.bat` | 不需要 Python 也能恢復被切斷的網路 |
+| `預覽警告.bat` | 預覽全螢幕警告 |
 
 打包好的檔案在 `dist\RansomGuard.exe`。
 
