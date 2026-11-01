@@ -2,80 +2,80 @@
 
 # RansomGuard
 
-**中文** | [English](README.en.md)
+**English** | [中文(繁體)](README.zh-TW.md)
 
-偵測勒索病毒的加密行為，一發現異常就**自動切斷網路**並跳出全螢幕警告，避免檔案繼續被加密、資料被傳出去。
+Detects ransomware encryption behavior and **cuts off the network automatically** the moment something looks wrong, then shows a full-screen warning. This stops files from being encrypted further and keeps data from being sent out.
 
-[![下載 RansomGuard.exe](https://img.shields.io/badge/下載-RansomGuard.exe-2563eb?style=for-the-badge&logo=windows)](https://github.com/leo-code-del/RansomGuard/releases/latest/download/RansomGuard.exe)
+[![Download RansomGuard.exe](https://img.shields.io/badge/Download-RansomGuard.exe-2563eb?style=for-the-badge&logo=windows)](https://github.com/leo-code-del/RansomGuard/releases/latest/download/RansomGuard.exe)
 
-[所有版本與更新紀錄](https://github.com/leo-code-del/RansomGuard/releases)
+[All versions and release notes](https://github.com/leo-code-del/RansomGuard/releases)
 
-> 介面支援中文與英文：預設跟著 Windows 顯示語言（中文就用中文，其他語言用英文），控制台右上角的 **English / 中文** 按鈕可以隨時切換，背景監控跳出的警告也會用同一種語言。
+> The interface is available in English and 中文(繁體) (Traditional Chinese). It follows your Windows display language (Chinese → 中文(繁體), anything else → English). Switch it any time with the **English / 中文(繁體)** button in the top-right corner of the control panel; the background monitor's warnings use the same language.
 
-## 安裝
+## Install
 
-1. 按上方按鈕下載 `RansomGuard.exe`（只支援 Windows 10 / 11）。
-2. 雙擊執行，出現「使用者帳戶控制」時按「是」（切斷網路需要系統管理員權限）。
-   - 若出現「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」。這是因為程式沒有數位簽章。
-3. 在控制台按 **安裝／更新並開始監控**。
+1. Download `RansomGuard.exe` with the button above (Windows 10 / 11 only).
+2. Double-click it. When User Account Control asks, click **Yes**. Administrator rights are needed to cut the network.
+   - If you see "Windows protected your PC", click **More info** → **Run anyway**. This appears because the program is not digitally signed.
+3. In the control panel, click **Install / update and start monitoring**.
 
-安裝後程式會複製到 `C:\Program Files\RansomGuard`，每次登入 Windows 都會在背景自動啟動，桌面也會出現「RansomGuard」捷徑可以開啟控制台。
+The program copies itself to `C:\Program Files\RansomGuard` and starts in the background every time you sign in to Windows. A "RansomGuard" shortcut on the desktop opens the control panel.
 
-## 偵測方式
+## What it detects
 
-以下任一情況成立就會觸發：
+Any one of these triggers it:
 
-| 偵測 | 說明 |
+| Detection | Details |
 | --- | --- |
-| 誘餌檔 | 在「文件」與「圖片」放幾個 `!!!_canary_勿刪.docx` 之類的檔案，被修改、移動或刪除就觸發 |
-| 檔案壞掉 | 短時間內多個 .docx / .pdf / .jpg / .mp4 等檔頭被破壞，或文字檔變成像加密過的亂碼 |
-| 陌生副檔名 | 短時間內大量檔案被改名，例如 `報告.docx` → `報告.docx.locked` |
-| 勒索訊息 | 短時間內多個資料夾出現 `HOW_TO_DECRYPT.txt` 之類的檔案 |
-| 危險指令 | 有程式刪除系統還原點、關閉開機修復、刪除備份、清除事件紀錄或關閉 Defender（會立刻終止該程式） |
+| Canary files | A few files such as `!!!_canary_do_not_delete.docx` are placed in Documents and Pictures. Modifying, moving or deleting them triggers it |
+| Broken files | Within a short time, several .docx / .pdf / .jpg / .mp4 files get corrupted headers, or text files turn into what looks like encrypted data |
+| Unknown extensions | Many files renamed within a short time, e.g. `report.docx` → `report.docx.locked` |
+| Ransom notes | Files such as `HOW_TO_DECRYPT.txt` appear in several folders within a short time |
+| Dangerous commands | A program deletes restore points, disables boot recovery, deletes backups, clears event logs or turns off Defender (that program is terminated immediately) |
 
-監控範圍：桌面、文件、圖片、下載、影片、音樂。
+Watched folders: Desktop, Documents, Pictures, Downloads, Videos, Music.
 
-> 請不要開啟、移動或刪除誘餌檔，那樣會觸發斷網。
+> Do not open, move or delete the canary files (names containing `canary_do_not_delete`). Doing so cuts the network.
 
-## 觸發之後
+## When it triggers
 
-1. 所有網路卡會被停用（失敗時改用防火牆封鎖），所有螢幕顯示紅色警告。
-2. **不要恢復網路**，也不要插上備份硬碟或隨身碟。
-3. 如果檔案還在一個一個被改名或打不開，立刻按住電源鍵強制關機。
-4. 用手機拍下勒索訊息，並用手機更改 Email、銀行等重要帳號的密碼。
+1. All network adapters are disabled (the firewall is used as a fallback), and a red warning covers every screen.
+2. **Do not restore the network**, and do not plug in backup drives or USB sticks.
+3. If files are still being renamed or becoming unreadable one by one, hold the power button to force the computer off immediately.
+4. Take a photo of the ransom note with your phone, and use your phone to change the passwords of important accounts such as email and banking.
 
-**如果確認是誤判**（例如自己動到誘餌檔）：開啟桌面上的「RansomGuard」，按 **恢復網路並重新開啟監控**。
+**If it was a false alarm** (e.g. you touched a canary file yourself): open "RansomGuard" on the desktop and click **Restore network and restart monitoring**.
 
-## 更新
+## Update
 
-到 [Releases](https://github.com/leo-code-del/RansomGuard/releases) 下載新版 `RansomGuard.exe`，執行後按 **安裝／更新並開始監控**，就會取代舊版。控制台左上角會顯示目前的版本號。
+Download the new `RansomGuard.exe` from [Releases](https://github.com/leo-code-del/RansomGuard/releases), run it and click **Install / update and start monitoring**. It replaces the old version. The current version number is shown in the top-left corner of the control panel.
 
-## 控制台功能
+## Control panel
 
-| 按鈕 | 作用 |
+| Button | What it does |
 | --- | --- |
-| 安裝／更新並開始監控 | 安裝或更新背景監控並立即啟動 |
-| 恢復網路並重新開啟監控 | 誤判後恢復網路 |
-| 停止監控 | 暫時停止，下次登入會自動再啟動 |
-| 預覽警告畫面 | 看看觸發時的警告長什麼樣子，不會斷網 |
-| 開啟紀錄檔 | 紀錄檔位置：`%LOCALAPPDATA%\RansomGuard\guard.log` |
-| 解除安裝 | 移除背景監控、桌面捷徑與誘餌檔 |
-| English / 中文（右上角） | 切換介面語言 |
+| Install / update and start monitoring | Installs or updates background monitoring and starts it |
+| Restore network and restart monitoring | Restores the network after a false alarm |
+| Stop monitoring | Stops it for now; it starts again at next sign-in |
+| Preview warning | Shows what the warning looks like, without cutting the network |
+| Open log | Log file: `%LOCALAPPDATA%\RansomGuard\guard.log` |
+| Uninstall | Removes background monitoring, the desktop shortcut and the canary files |
+| English / 中文(繁體) (top right) | Switches the interface language |
 
-## 命令列參數
+## Command-line options
 
 ```
-RansomGuard.exe              開啟控制台
-RansomGuard.exe --install    安裝／更新背景監控
-RansomGuard.exe --restore    恢復網路，並重新開啟背景監控
-RansomGuard.exe --dry-run    測試模式：只記錄與跳窗，不會真的斷網
-RansomGuard.exe --test-alert 預覽全螢幕警告
-RansomGuard.exe --watch D:\資料 --watch E:\備份   自訂監控資料夾
-RansomGuard.exe --version    顯示版本
-RansomGuard.exe --lang en    這次用英文介面（zh＝中文）
+RansomGuard.exe              Open the control panel
+RansomGuard.exe --install    Install / update background monitoring
+RansomGuard.exe --restore    Restore the network and restart background monitoring
+RansomGuard.exe --dry-run    Test mode: log and show alerts only, never cut the network
+RansomGuard.exe --test-alert Preview the full-screen warning
+RansomGuard.exe --watch D:\Data --watch E:\Backup   Watch custom folders
+RansomGuard.exe --version    Show the version
+RansomGuard.exe --lang en    Use English for this run (zh = 中文(繁體))
 ```
 
-## 從原始碼執行與打包
+## Run from source and build
 
 ```
 pip install watchdog pyinstaller
@@ -84,30 +84,30 @@ python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon
        --distpath dist --workpath build --specpath build ransom_guard.py
 ```
 
-圖標 `icon.ico` / `icon.png` 由 `make_icon.py` 產生（需要 `pip install pillow`），要改圖標就改這個檔案再執行一次。
+The icon (`icon.ico` / `icon.png`) is generated by `make_icon.py` (needs `pip install pillow`). To change the icon, edit that file and run it again.
 
-不想用 exe、直接用 Python 執行的話，專案裡有幾個輔助檔案（要和 `ransom_guard.py` 放在同一個資料夾）：
+To run with Python instead of the exe, the project includes a few helper files (keep them in the same folder as `ransom_guard.py`):
 
-| 檔案 | 作用 |
+| File | What it does |
 | --- | --- |
-| `install_ransom_guard.bat` | 用 Python 版安裝背景監控（自動找 Python、安裝 watchdog） |
-| `恢復網路.bat` | 不需要 Python 也能恢復被切斷的網路 |
-| `預覽警告.bat` | 預覽全螢幕警告 |
+| `install_ransom_guard.bat` | Installs background monitoring using Python (finds Python and installs watchdog) |
+| `restore_network.bat` | Restores a cut-off network, no Python needed |
+| `preview_warning.bat` | Previews the full-screen warning |
 
-打包好的檔案在 `dist\RansomGuard.exe`。
+The built file is `dist\RansomGuard.exe`.
 
-### 發布新版
+### Publishing a new version
 
-1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.2.1"`。
-2. 重新打包，提交並推送。
-3. 建立 Release 並附上 exe：
+1. Change `VERSION` in `ransom_guard.py`, e.g. to `"1.3.1"`.
+2. Rebuild, commit and push.
+3. Create a release with the exe attached:
 
    ```
-   gh release create v1.2.1 dist\RansomGuard.exe --title "RansomGuard 1.2.1" --notes "更新內容..."
+   gh release create v1.3.1 dist\RansomGuard.exe --title "RansomGuard 1.3.1" --notes "What changed..."
    ```
 
-README 的下載按鈕永遠指向最新版本，不需要修改。
+The download button in the README always points to the latest version, so it never needs editing.
 
-## 注意
+## Note
 
-RansomGuard 是額外的防線，不能取代防毒軟體與**離線備份**。重要檔案請定期備份到平常不接在電腦上的硬碟。
+RansomGuard is an extra line of defense. It does not replace antivirus software or **offline backups**. Back up important files regularly to a drive that is not normally connected to the computer.

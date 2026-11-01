@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""產生 RansomGuard 的圖標：icon.ico（打包 exe 用）與 icon.png（README 用）。
+"""Generate RansomGuard's icon: icon.ico (for the exe) and icon.png (for the README).
 
   python make_icon.py
 
-需要套件：pip install pillow
+Requires: pip install pillow
 """
-
-import sys
 
 from PIL import Image, ImageChops, ImageDraw
 
-S = 1024  # 先畫大圖再縮小，邊緣才平滑
+S = 1024  # draw large, then scale down, for smooth edges
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
-SMALL = 24  # 這個尺寸以下用簡化版（沒有鑰匙孔與內框，線條加粗）
+SMALL = 24  # at or below this size use the simplified version (no keyhole or inner rim, thicker lines)
 
 
 def bezier(p0, p1, p2, p3, n=64):
@@ -27,7 +25,7 @@ def bezier(p0, p1, p2, p3, n=64):
 
 
 def shield(scale=1.0, cy=0.47):
-    """盾牌外形（以 (0.5, cy) 為中心縮放）。"""
+    """Shield outline (scaled around (0.5, cy))."""
     L, T, R, B = (0.11, 0.19), (0.5, 0.05), (0.89, 0.19), (0.5, 0.97)
     pts = (bezier(L, (0.28, 0.18), (0.40, 0.11), T) + bezier(T, (0.60, 0.11), (0.72, 0.18), R)
            + bezier(R, (0.90, 0.57), (0.72, 0.85), B) + bezier(B, (0.28, 0.85), (0.10, 0.57), L))
@@ -55,30 +53,30 @@ def hexrgb(h):
 def render(small=False):
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     outer = mask(shield())
-    img.paste(gradient(hexrgb("#7cb4ff"), hexrgb("#2f6fe4")), (0, 0), outer)  # 亮色外框
+    img.paste(gradient(hexrgb("#7cb4ff"), hexrgb("#2f6fe4")), (0, 0), outer)  # light rim
     inner = mask(shield(0.86))
     img.paste(gradient(hexrgb("#3b82f6"), hexrgb("#1e3a8a")), (0, 0), inner)
-    if not small:  # 右半邊稍暗，做出立體感
+    if not small:  # darker right half for depth
         right = Image.new("L", (S, S), 0)
         ImageDraw.Draw(right).rectangle((S // 2, 0, S, S), fill=46)
         img.paste((10, 20, 60, 255), (0, 0), ImageChops.multiply(right, inner))
 
     d = ImageDraw.Draw(img)
     white = (255, 255, 255, 255)
-    k = 1.35 if small else 1.1  # 小圖示的鎖頭放大一點
+    k = 1.35 if small else 1.1  # slightly larger padlock on small icons
     cx, cy = 0.5 * S, 0.53 * S
 
     def box(x0, y0, x1, y1):
         return (cx + x0 * k * S, cy + y0 * k * S, cx + x1 * k * S, cy + y1 * k * S)
 
-    w = round((0.075 if small else 0.052) * S)  # 鎖環粗細
-    sh = box(-0.10, -0.24, 0.10, -0.04)  # 鎖環的圓弧
+    w = round((0.075 if small else 0.052) * S)  # shackle thickness
+    sh = box(-0.10, -0.24, 0.10, -0.04)  # shackle arc
     d.arc(sh, 180, 360, fill=white, width=w)
     mid = (sh[1] + sh[3]) / 2
     d.rectangle((sh[0], mid - 1, sh[0] + w, cy), fill=white)
     d.rectangle((sh[2] - w, mid - 1, sh[2], cy), fill=white)
     d.rounded_rectangle(box(-0.155, -0.065, 0.155, 0.185), radius=0.04 * k * S, fill=white)
-    if not small:  # 鑰匙孔
+    if not small:  # keyhole
         hole = hexrgb("#1e3a8a") + (255,)
         r = 0.034 * k * S
         hy = cy + 0.04 * k * S
@@ -94,8 +92,7 @@ def main():
     imgs = [(small if n <= SMALL else big).resize((n, n), Image.LANCZOS) for n in SIZES]
     imgs[-1].save("icon.ico", sizes=[(n, n) for n in SIZES], append_images=imgs[:-1])
     imgs[-1].save("icon.png")
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # 主控台不是 UTF-8 時中文才不會出錯
-    print("已產生 icon.ico、icon.png")
+    print("Created icon.ico and icon.png")
 
 
 if __name__ == "__main__":
