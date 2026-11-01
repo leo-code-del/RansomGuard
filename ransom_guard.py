@@ -26,6 +26,7 @@ RansomGuard — 偵測疑似勒索病毒的加密行為，觸發時自動切斷�
   python ransom_guard.py --install   安裝／更新背景監控（.exe 會複製到 Program Files）
   python ransom_guard.py --test-alert  預覽全螢幕警告（不偵測、不斷網）
   python ransom_guard.py --watch D:\\資料 --watch E:\\備份   自訂監控資料夾
+  python ransom_guard.py --lang en   介面用英文（zh＝中文；預設依 Windows 顯示語言，控制台可切換）
 
 需要套件：pip install watchdog
 紀錄檔位置：%LOCALAPPDATA%\\RansomGuard\\guard.log
@@ -57,7 +58,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.1.0"  # 發布新版時改這裡，並在 GitHub 建立對應的 Release（v1.1.0）
+VERSION = "1.2.0"  # 發布新版時改這裡，並在 GitHub 建立對應的 Release（v1.2.0）
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # 用 PyInstaller 打包成 .exe 執行中
 TASK_NAME = "RansomGuard"
@@ -140,22 +141,34 @@ NOTE_PATTERN = re.compile(
     re.IGNORECASE)
 
 # 勒索病毒/入侵者常用的破壞指令（比對小寫後的命令列）
+_SHADOW = ("刪除系統還原點", "deleting restore points")
+_BOOT = ("關閉 Windows 開機修復", "disabling Windows boot recovery")
 _DANGEROUS_CMDS = [
-    (r"vssadmin(\.exe)?\W.*\bdelete\s+shadows", "刪除系統還原點"),
-    (r"vssadmin(\.exe)?\W.*\bresize\s+shadowstorage", "縮小還原點空間（等於刪除還原點）"),
-    (r"\bshadowcopy\b.*\bdelete\b", "刪除系統還原點"),
-    (r"win32_shadowcopy.*(\.delete\(|remove-(cim|wmi)\w*)", "刪除系統還原點"),
-    (r"bcdedit(\.exe)?\W.*recoveryenabled\s+(no|off|false|0)\b", "關閉 Windows 開機修復"),
-    (r"bcdedit(\.exe)?\W.*bootstatuspolicy\s+ignoreallfailures", "關閉 Windows 開機修復"),
-    (r"wbadmin(\.exe)?\W.*\bdelete\s+(catalog|systemstatebackup|backup)", "刪除 Windows 備份"),
-    (r"wevtutil(\.exe)?\W+(cl|clear-log)\s", "清除事件紀錄"),
+    (r"vssadmin(\.exe)?\W.*\bdelete\s+shadows", *_SHADOW),
+    (r"vssadmin(\.exe)?\W.*\bresize\s+shadowstorage", "縮小還原點空間（等於刪除還原點）",
+     "shrinking restore point storage (same as deleting them)"),
+    (r"\bshadowcopy\b.*\bdelete\b", *_SHADOW),
+    (r"win32_shadowcopy.*(\.delete\(|remove-(cim|wmi)\w*)", *_SHADOW),
+    (r"bcdedit(\.exe)?\W.*recoveryenabled\s+(no|off|false|0)\b", *_BOOT),
+    (r"bcdedit(\.exe)?\W.*bootstatuspolicy\s+ignoreallfailures", *_BOOT),
+    (r"wbadmin(\.exe)?\W.*\bdelete\s+(catalog|systemstatebackup|backup)", "刪除 Windows 備份",
+     "deleting Windows backups"),
+    (r"wevtutil(\.exe)?\W+(cl|clear-log)\s", "清除事件紀錄", "clearing event logs"),
     (r"set-mppreference\b.*-disable(realtimemonitoring|behaviormonitoring|ioavprotection"
-     r"|scriptscanning|blockatfirstseen)\s+(\$true|1)\b", "關閉 Windows Defender 防護"),
+     r"|scriptscanning|blockatfirstseen)\s+(\$true|1)\b", "關閉 Windows Defender 防護",
+     "disabling Windows Defender protection"),
 ]
-DANGEROUS_CMDS = [(re.compile(p), what) for p, what in _DANGEROUS_CMDS]
+DANGEROUS_CMDS = [(re.compile(p), zh, en) for p, zh, en in _DANGEROUS_CMDS]
 _PS_ENCODED = re.compile(r"(?:^|\s)[-/]e(?:c|nc?\w*)?\s+([A-Za-z0-9+/=]{12,})", re.IGNORECASE)
 
 log = logging.getLogger("RansomGuard")
+LANG = "zh"      # 介面語言：zh / en，由 init_lang() 決定
+_LANG_ARG = None  # 命令列 --lang 指定的語言
+
+
+def tr(zh: str, en: str) -> str:
+    """依介面語言回傳中文或英文。"""
+    return en if LANG == "en" else zh
 
 
 # ---------------- 基本工具 ----------------
@@ -220,6 +233,41 @@ def save_state(st: dict):
         json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_settings() -> dict:
+    try:
+        return json.loads((app_dir() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def system_lang() -> str:
+    """Windows 顯示語言是中文就用中文，其他語言都用英文。"""
+    if IS_WINDOWS:
+        try:
+            return "zh" if ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x04 else "en"
+        except Exception:
+            pass
+    return "zh" if os.environ.get("LANG", "").lower().startswith("zh") else "en"
+
+
+def init_lang(arg=None):
+    """介面語言：命令列 --lang > 控制台裡選的語言 > Windows 顯示語言。
+    背景監控觸發時會再呼叫一次，才會用到在控制台新選的語言。"""
+    global LANG, _LANG_ARG
+    if arg:
+        _LANG_ARG = arg
+    LANG = _LANG_ARG or load_settings().get("lang") or system_lang()
+
+
+def set_lang(lang: str):
+    global LANG
+    LANG = lang
+    st = load_settings()
+    st["lang"] = lang
+    (app_dir() / "settings.json").write_text(
+        json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def is_admin() -> bool:
     if not IS_WINDOWS:
         return getattr(os, "geteuid", lambda: -1)() == 0
@@ -271,12 +319,15 @@ def kill_with_me(proc):
         # 9 = JobObjectExtendedLimitInformation
         if not job or not k32.SetInformationJobObject(job, 9, ctypes.byref(info),
                                                       ctypes.sizeof(info)):
-            log.warning("無法建立 Job Object（錯誤 %d）", ctypes.get_last_error())
+            log.warning(tr("無法建立 Job Object（錯誤 %d）", "Could not create Job Object (error %d)"),
+                        ctypes.get_last_error())
             return
         _JOB = job
     h = k32.OpenProcess(0x0100 | 0x0001, False, proc.pid)  # SET_QUOTA | TERMINATE
     if not h or not k32.AssignProcessToJobObject(_JOB, h):
-        log.warning("無法把子程序 %s 放進 Job Object（錯誤 %d）", proc.pid, ctypes.get_last_error())
+        log.warning(tr("無法把子程序 %s 放進 Job Object（錯誤 %d）",
+                       "Could not add child process %s to Job Object (error %d)"),
+                    proc.pid, ctypes.get_last_error())
     if h:
         k32.CloseHandle(h)
 
@@ -304,7 +355,7 @@ def exit_with_launcher():
 
     def wait():
         k32.WaitForSingleObject(h, 0xFFFFFFFF)
-        log.info("外層程序已結束，監控跟著結束")
+        log.info(tr("外層程序已結束，監控跟著結束", "Launcher process exited, so monitoring exits too"))
         os._exit(0)
     threading.Thread(target=wait, daemon=True).start()
 
@@ -323,7 +374,7 @@ def single_instance() -> bool:
 def alert(title: str, msg: str):
     """跳出最上層警告視窗（不阻塞監控）。"""
     if not IS_WINDOWS:
-        log.info("[警告視窗] %s：%s", title, msg.replace("\n", " "))
+        log.info(tr("[警告視窗] %s：%s", "[Alert] %s: %s"), title, msg.replace("\n", " "))
         return
     def _box():
         # MB_ICONERROR | MB_SYSTEMMODAL | MB_TOPMOST
@@ -332,31 +383,17 @@ def alert(title: str, msg: str):
 
 
 # 全螢幕警告：用 PowerShell + WinForms 畫，所有螢幕都蓋滿、紅色閃爍、發出警示音
-# （腳本與資料直接放在命令列，不寫成檔案，避免以系統管理員執行前被其他程式偷換）
+# （腳本放在命令列、資料放在環境變數，都不寫成檔案，避免以系統管理員執行前被其他程式偷換。
+#  資料不放命令列：偵測原因可能含有 vssadmin delete shadows 之類的指令，Defender 會把整個警告擋掉）
 ALERT_PS1 = r'''
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$info = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__INFO_B64__')) | ConvertFrom-Json
+$info = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:RG_ALERT_INFO)) | ConvertFrom-Json
 $isTest = ($info.status -eq 'test')
-switch ($info.status) {
-    'cut'     { $netText = '網路已自動切斷' }
-    'partial' { $netText = '網路可能沒有完全切斷！請立刻拔掉網路線、關閉 Wi-Fi' }
-    default   { $netText = '（測試模式：沒有切斷網路）' }
-}
-$steps = @(
-    '1. 不要恢復網路，也不要插上備份硬碟或隨身碟',
-    '2. 如果檔案還在一個一個被改名、打不開，立刻按住電源鍵強制關機',
-    '3. 用手機拍下桌面或資料夾裡出現的勒索訊息',
-    '4. 用手機（不要用這台電腦）更改 Email、銀行等重要帳號的密碼'
-) -join "`n"
-if ($isTest) {
-    $hint = '這是測試，按下方按鈕關閉即可。'
-} else {
-    $hint = "如果確認是誤判（例如是你自己動到誘餌檔）：關閉這個視窗後，$($info.restore)。"
-}
+$t = $info.t  # 畫面上的文字（依語言由 Python 準備好）
 
 $script:ack = $false
 $script:forms = New-Object System.Collections.ArrayList
@@ -365,7 +402,7 @@ $script:bright = [System.Drawing.Color]::FromArgb(205, 0, 0)
 $script:dark   = [System.Drawing.Color]::FromArgb(105, 0, 0)
 $yellow = [System.Drawing.Color]::FromArgb(255, 225, 0)
 $white  = [System.Drawing.Color]::White
-$fontName = 'Microsoft JhengHei UI'
+$fontName = $t.font
 
 function Close-All {
     $script:ack = $true
@@ -394,31 +431,31 @@ foreach ($scr in [System.Windows.Forms.Screen]::AllScreens) {
     $f.Bounds = $scr.Bounds
     $f.TopMost = $true
     $f.ShowInTaskbar = $true
-    $f.Text = 'RansomGuard 警告'
+    $f.Text = $t.window
     $f.BackColor = $script:bright
     $W = $scr.Bounds.Width
     $H = $scr.Bounds.Height
     $k = $H / 1080.0
 
     $y = [int](60 * $k)
-    $y = Add-Text $f '！！ 偵測到疑似勒索病毒 ！！' (50 * $k) $true $white $y 40 ($W - 80) 'MiddleCenter'
-    $y = Add-Text $f $netText (30 * $k) $true $yellow $y 40 ($W - 80) 'MiddleCenter'
+    $y = Add-Text $f $t.title (50 * $k) $true $white $y 40 ($W - 80) 'MiddleCenter'
+    $y = Add-Text $f $t.net (30 * $k) $true $yellow $y 40 ($W - 80) 'MiddleCenter'
     $y += [int](20 * $k)
-    $y = Add-Text $f ("偵測時間：" + $info.time + "`n原因：" + $info.reason) (15 * $k) $false $white $y 80 ($W - 160) 'MiddleCenter'
+    $y = Add-Text $f $t.detail (15 * $k) $false $white $y 80 ($W - 160) 'MiddleCenter'
     $y += [int](25 * $k)
-    $y = Add-Text $f '接下來請這樣做：' (22 * $k) $true $yellow $y ([int]($W * 0.16)) ([int]($W * 0.68)) 'MiddleLeft'
-    $y = Add-Text $f $steps (20 * $k) $false $white $y ([int]($W * 0.16)) ([int]($W * 0.68)) 'MiddleLeft'
+    $y = Add-Text $f $t.next (22 * $k) $true $yellow $y ([int]($W * 0.16)) ([int]($W * 0.68)) 'MiddleLeft'
+    $y = Add-Text $f $t.steps (20 * $k) $false $white $y ([int]($W * 0.16)) ([int]($W * 0.68)) 'MiddleLeft'
     $y += [int](20 * $k)
-    $y = Add-Text $f $hint (16 * $k) $false $white $y 80 ($W - 160) 'MiddleCenter'
+    $y = Add-Text $f $t.hint (16 * $k) $false $white $y 80 ($W - 160) 'MiddleCenter'
 
     $btnFont = New-Object System.Drawing.Font($fontName, [single](18 * $k), [System.Drawing.FontStyle]::Bold)
-    $bw = [int](380 * $k); $bh = [int](72 * $k); $gap = [int](40 * $k)
+    $bw = [int](460 * $k); $bh = [int](72 * $k); $gap = [int](40 * $k)
     $by = [Math]::Min($y + [int](30 * $k), $H - $bh - [int](30 * $k))
     $count = if ($isTest) { 1 } else { 2 }
     $bx = [int](($W - ($count * $bw + ($count - 1) * $gap)) / 2)
 
     $ok = New-Object System.Windows.Forms.Button
-    $ok.Text = '我知道了（關閉警告）'
+    $ok.Text = $t.ok
     $ok.Font = $btnFont
     $ok.FlatStyle = 'Flat'
     $ok.BackColor = $white
@@ -429,14 +466,14 @@ foreach ($scr in [System.Windows.Forms.Screen]::AllScreens) {
 
     if (-not $isTest) {
         $sd = New-Object System.Windows.Forms.Button
-        $sd.Text = '立即強制關機'
+        $sd.Text = $t.shutdown
         $sd.Font = $btnFont
         $sd.FlatStyle = 'Flat'
         $sd.BackColor = [System.Drawing.Color]::Black
         $sd.ForeColor = $yellow
         $sd.SetBounds($bx + $bw + $gap, $by, $bw, $bh)
         $sd.add_Click({
-            $r = [System.Windows.Forms.MessageBox]::Show($this.FindForm(), "確定要立即強制關機嗎？`n尚未儲存的工作會遺失。", 'RansomGuard', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            $r = [System.Windows.Forms.MessageBox]::Show($this.FindForm(), $t.confirm, 'RansomGuard', [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
             if ($r -eq 'Yes') { Stop-Computer -Force }
         })
         $f.Controls.Add($sd)
@@ -464,33 +501,64 @@ $timer.add_Tick({
 for ($i = 1; $i -lt $script:forms.Count; $i++) { $script:forms[$i].Show() }
 $timer.Start()
 [System.Windows.Forms.Application]::Run($script:forms[0])
+if (-not $script:ack) { exit 3 }  # 不是使用者按按鈕關掉的（例如被其他程式關掉）：讓 Python 改用一般警告
 '''
 
 
 def fullscreen_alert(reason: str, status: str, wait: bool = False):
     """全螢幕警告。status: cut（已斷網）/ partial（斷網不完整）/ test（測試）。"""
-    log.warning("[全螢幕警告] %s（%s）", reason, status)
+    log.warning(tr("[全螢幕警告] %s（%s）", "[Full-screen warning] %s (%s)"), reason, status)
     if not IS_WINDOWS:
         return None
     try:
-        info = json.dumps({
-            "status": status,
-            "reason": reason if len(reason) <= 160 else reason[:157] + "...",
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "restore": restore_hint(),
-        }, ensure_ascii=False)
-        script = ALERT_PS1.replace(
-            "__INFO_B64__", base64.b64encode(info.encode("utf-8")).decode("ascii"))
+        reason = reason if len(reason) <= 160 else reason[:157] + "..."
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        steps = [
+            tr("1. 不要恢復網路，也不要插上備份硬碟或隨身碟",
+               "1. Do not restore the network, and do not plug in backup drives or USB sticks"),
+            tr("2. 如果檔案還在一個一個被改名、打不開，立刻按住電源鍵強制關機",
+               "2. If files are still being renamed or becoming unreadable, hold the power button "
+               "to force the computer off now"),
+            tr("3. 用手機拍下桌面或資料夾裡出現的勒索訊息",
+               "3. Take a photo of any ransom note on the desktop or in folders with your phone"),
+            tr("4. 用手機（不要用這台電腦）更改 Email、銀行等重要帳號的密碼",
+               "4. Using your phone (not this computer), change the passwords of important accounts "
+               "such as email and banking"),
+        ]
+        info = json.dumps({"status": status, "t": {
+            "window": tr("RansomGuard 警告", "RansomGuard warning"),
+            "font": tr("Microsoft JhengHei UI", "Segoe UI"),
+            "title": tr("！！ 偵測到疑似勒索病毒 ！！", "!! Possible ransomware detected !!"),
+            "net": {"cut": tr("網路已自動切斷", "The network has been cut off automatically"),
+                    "partial": tr("網路可能沒有完全切斷！請立刻拔掉網路線、關閉 Wi-Fi",
+                                  "The network may not be fully cut off! Unplug the network "
+                                  "cable and turn off Wi-Fi now")
+                    }.get(status, tr("（測試模式：沒有切斷網路）", "(Test mode: the network was not cut off)")),
+            "detail": tr(f"偵測時間：{now}\n原因：{reason}", f"Detected at: {now}\nReason: {reason}"),
+            "next": tr("接下來請這樣做：", "What to do now:"),
+            "steps": "\n".join(steps),
+            "hint": (tr("這是測試，按下方按鈕關閉即可。", "This is a test. Click the button below to close it.")
+                     if status == "test" else
+                     tr(f"如果確認是誤判（例如是你自己動到誘餌檔）：關閉這個視窗後，{restore_hint()}。",
+                        "If this is a false alarm (e.g. you touched a canary file yourself): "
+                        f"close this window, then {restore_hint()}.")),
+            "ok": tr("我知道了（關閉警告）", "I understand (close warning)"),
+            "shutdown": tr("立即強制關機", "Force shut down now"),
+            "confirm": tr("確定要立即強制關機嗎？\n尚未儲存的工作會遺失。",
+                          "Force the computer to shut down now?\nUnsaved work will be lost."),
+        }}, ensure_ascii=False)
+        env = dict(os.environ, RG_ALERT_INFO=base64.b64encode(info.encode("utf-8")).decode("ascii"))
         proc = subprocess.Popen(
-            ps_encoded_args(script, "-STA", "-WindowStyle", "Hidden"),
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            ps_encoded_args(ALERT_PS1, "-STA", "-WindowStyle", "Hidden"),
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env,
             creationflags=CREATE_NO_WINDOW)
         assert proc.stderr is not None
         try:
-            rc = proc.wait(timeout=4)  # 4 秒內就出錯結束 = 視窗沒開起來
+            rc = proc.wait(timeout=4)  # 4 秒內就出錯結束 = 視窗沒開起來或被其他程式關掉
             if rc != 0:
                 err = proc.stderr.read().decode("utf-8", "replace").strip()
-                raise RuntimeError(f"全螢幕警告啟動失敗（代碼 {rc}）：{err[:300]}")
+                raise RuntimeError(tr(f"全螢幕警告啟動失敗（代碼 {rc}）：{err[:300]}",
+                                      f"Full-screen warning failed to start (code {rc}): {err[:300]}"))
         except subprocess.TimeoutExpired:
             # 還在執行 = 警告視窗正常顯示中；持續讀掉錯誤輸出，免得管線塞滿卡住視窗
             threading.Thread(target=proc.stderr.read, daemon=True).start()
@@ -498,8 +566,9 @@ def fullscreen_alert(reason: str, status: str, wait: bool = False):
             proc.wait()
         return proc
     except Exception as ex:
-        log.error("%s；改用一般警告視窗", ex)
-        alert("RansomGuard：偵測到疑似勒索病毒", f"{reason}\n\n狀態：{status}")
+        log.error(tr("%s；改用一般警告視窗", "%s; using a regular alert instead"), ex)
+        alert(tr("RansomGuard：偵測到疑似勒索病毒", "RansomGuard: possible ransomware detected"),
+              tr(f"{reason}\n\n狀態：{status}", f"{reason}\n\nStatus: {status}"))
         return None
 
 
@@ -571,14 +640,18 @@ def plant_canaries(dirs):
             p = Path(d) / name
             try:
                 if p.exists() and p.read_bytes() != CANARY_BYTES:
-                    log.warning("誘餌檔內容和預期不同（程式沒執行時被改過？）：%s", p)
-                    alert("RansomGuard 注意",
-                          f"誘餌檔在程式沒執行時被修改過：\n{p}\n\n請確認電腦是否異常。")
+                    log.warning(tr("誘餌檔內容和預期不同（程式沒執行時被改過？）：%s",
+                                   "Canary file content is not what was expected "
+                                   "(changed while the program was not running?): %s"), p)
+                    alert(tr("RansomGuard 注意", "RansomGuard notice"),
+                          tr(f"誘餌檔在程式沒執行時被修改過：\n{p}\n\n請確認電腦是否異常。",
+                             f"A canary file was modified while the program was not running:\n{p}\n\n"
+                             "Please check whether something is wrong with this computer."))
                 if not p.exists() or p.read_bytes() != CANARY_BYTES:
                     p.write_bytes(CANARY_BYTES)
                 paths.append(p)
             except OSError as ex:
-                log.warning("無法建立誘餌檔 %s：%s", p, ex)
+                log.warning(tr("無法建立誘餌檔 %s：%s", "Could not create canary file %s: %s"), p, ex)
     return paths
 
 
@@ -587,9 +660,9 @@ def check_canaries(canaries):
     for p in canaries:
         try:
             if Path(p).read_bytes() != CANARY_BYTES:
-                return f"誘餌檔內容被修改：{p}"
+                return tr(f"誘餌檔內容被修改：{p}", f"Canary file was modified: {p}")
         except FileNotFoundError:
-            return f"誘餌檔不見了：{p}"
+            return tr(f"誘餌檔不見了：{p}", f"Canary file is missing: {p}")
         except OSError:
             pass  # 暫時被鎖住（例如防毒正在掃描），下次再檢查
     return None
@@ -601,7 +674,7 @@ def periodic_check(handler, canaries):
         return
     reason = check_canaries(canaries)
     if reason:
-        handler.fire(reason + "（定期檢查發現）")
+        handler.fire(reason + tr("（定期檢查發現）", " (found by periodic check)"))
 
 
 # ---------------- 判斷檔案是否「壞掉」 ----------------
@@ -636,13 +709,13 @@ def broken_reason(path: str):
         return None
     if ext in MAGIC:
         ok = (b"%PDF" in data[:1024]) if ext == ".pdf" else _magic_ok(data, MAGIC[ext])
-        return None if ok else "檔頭不符"
+        return None if ok else tr("檔頭不符", "bad file header")
     if ext == ".ts" and data[0] == 0x47 and (len(data) <= 188 or data[188] == 0x47):
         return None  # MPEG-TS 影片（同副檔名），不是 TypeScript
     if size >= ENTROPY_MIN_SIZE:
         h = entropy(data)
         if h > ENTROPY_LIMIT:
-            return f"亂度 {h:.2f}"
+            return tr(f"亂度 {h:.2f}", f"entropy {h:.2f}")
     return None
 
 
@@ -679,9 +752,9 @@ def dangerous_command(cmdline: str):
             pass
     for text in texts:
         low = text.lower()
-        for pat, what in DANGEROUS_CMDS:
+        for pat, zh, en in DANGEROUS_CMDS:
             if pat.search(low):
-                return what
+                return tr(zh, en)
     return None
 
 
@@ -719,7 +792,8 @@ def make_handler(canaries, on_trigger, dry_run):
                     q.popleft()
                 n = len({k for _, k in q})
             if n >= threshold:
-                self.fire(f"{WINDOW_SEC} 秒內有 {n} 個{label}（例如 {example}）")
+                self.fire(tr(f"{WINDOW_SEC} 秒內有 {n} 個{label}（例如 {example}）",
+                             f"{n} {label} within {WINDOW_SEC} seconds (e.g. {example})"))
 
         def on_any_event(self, event):
             if event.is_directory:
@@ -727,7 +801,7 @@ def make_handler(canaries, on_trigger, dry_run):
             try:
                 self._handle(event)
             except Exception:
-                log.exception("處理事件時發生錯誤")
+                log.exception(tr("處理事件時發生錯誤", "Error while handling a file event"))
 
         def _handle(self, e):
             t = e.event_type
@@ -741,30 +815,32 @@ def make_handler(canaries, on_trigger, dry_run):
             # 1. 誘餌檔
             if norm(src) in self.canaries:
                 if t == "deleted":
-                    return self.fire(f"誘餌檔被刪除：{src}")
+                    return self.fire(tr(f"誘餌檔被刪除：{src}", f"Canary file was deleted: {src}"))
                 if t == "moved":
-                    return self.fire(f"誘餌檔被改名或移動：{src} → {dest}")
+                    return self.fire(tr(f"誘餌檔被改名或移動：{src} → {dest}",
+                                        f"Canary file was renamed or moved: {src} → {dest}"))
                 try:
                     if Path(src).read_bytes() != CANARY_BYTES:
-                        return self.fire(f"誘餌檔內容被修改：{src}")
+                        return self.fire(tr(f"誘餌檔內容被修改：{src}", f"Canary file was modified: {src}"))
                 except OSError:
                     pass
                 return
             if dest and norm(dest) in self.canaries:
-                return self.fire(f"有檔案覆蓋了誘餌檔：{src} → {dest}")
+                return self.fire(tr(f"有檔案覆蓋了誘餌檔：{src} → {dest}",
+                                    f"A file overwrote a canary file: {src} → {dest}"))
 
             # 3. 改成陌生副檔名
             if suspicious_ext(t, src, dest):
                 self._count(self.extchg, dest or src, EXT_CHANGE_THRESHOLD,
-                            "檔案被改成陌生副檔名", dest or src)
+                            tr("檔案被改成陌生副檔名", "files renamed to unknown extensions"), dest or src)
 
             # 4. 勒索訊息檔
             if t in ("created", "moved"):
                 path = dest if t == "moved" else src
                 if is_ransom_note(os.path.basename(path)):
-                    log.warning("出現疑似勒索訊息檔：%s", path)
+                    log.warning(tr("出現疑似勒索訊息檔：%s", "Possible ransom note: %s"), path)
                     self._count(self.notes, os.path.dirname(path), NOTE_DIR_THRESHOLD,
-                                "資料夾出現勒索訊息檔", path)
+                                tr("資料夾出現勒索訊息檔", "folders with ransom notes"), path)
 
             # 2. 檔案內容壞掉
             if t in ("created", "modified", "closed", "moved"):
@@ -773,9 +849,9 @@ def make_handler(canaries, on_trigger, dry_run):
                     return
                 reason = broken_reason(path)
                 if reason:
-                    log.info("疑似被加密的檔案（%s）：%s", reason, path)
+                    log.info(tr("疑似被加密的檔案（%s）：%s", "File looks encrypted (%s): %s"), reason, path)
                     self._count(self.broken, path, BROKEN_THRESHOLD,
-                                "檔案疑似被加密", path)
+                                tr("檔案疑似被加密", "files that look encrypted"), path)
 
     return Guard()
 
@@ -824,7 +900,7 @@ class ProcessMonitor:
         for raw in proc.stdout or ():
             line = raw.decode("utf-8", "replace").rstrip("\r\n")
             if line == "READY":
-                log.info("程序監控已啟動")
+                log.info(tr("程序監控已啟動", "Process monitor started"))
                 continue
             parts = line.split("\t", 3)
             if len(parts) != 4:
@@ -832,7 +908,7 @@ class ProcessMonitor:
             try:
                 self._check(int(parts[0]), int(parts[1] or 0), parts[2], parts[3])
             except Exception:
-                log.exception("檢查程序時發生錯誤")
+                log.exception(tr("檢查程序時發生錯誤", "Error while checking a process"))
 
     def _check(self, pid, ppid, name, cmdline):
         if ppid == os.getpid() and name.lower() == "powershell.exe":  # 本程式自己叫出來的
@@ -843,14 +919,16 @@ class ProcessMonitor:
         if self.kill:
             try:
                 os.kill(pid, signal.SIGTERM)  # Windows 上等於 TerminateProcess
-                result = "已強制終止"
+                result = tr("已強制終止", "terminated")
             except OSError as ex:
-                result = f"無法終止：{ex}"
+                result = tr(f"無法終止：{ex}", f"could not terminate: {ex}")
         else:
-            result = "測試模式：未終止"
-        log.critical("可疑指令（%s）%s PID %s，父程序 PID %s，%s：%s",
+            result = tr("測試模式：未終止", "test mode: not terminated")
+        log.critical(tr("可疑指令（%s）%s PID %s，父程序 PID %s，%s：%s",
+                        "Suspicious command (%s) %s PID %s, parent PID %s, %s: %s"),
                      what, name, pid, ppid, result, cmdline)
-        self.on_hit(f"有程序在{what}：{name}（PID {pid}，{result}）{cmdline[:120]}")
+        self.on_hit(tr(f"有程序在{what}：{name}（PID {pid}，{result}）{cmdline[:120]}",
+                       f"A process is {what}: {name} (PID {pid}, {result}) {cmdline[:120]}"))
 
 
 # ---------------- 網路控制（Windows） ----------------
@@ -872,12 +950,12 @@ def _run(args):
         subprocess.run(args, capture_output=True, timeout=30,
                        creationflags=CREATE_NO_WINDOW if IS_WINDOWS else 0)
     except Exception as ex:
-        log.error("執行 %s 失敗：%s", args, ex)
+        log.error(tr("執行 %s 失敗：%s", "Failed to run %s: %s"), args, ex)
 
 
 def disconnect_network() -> bool:
     if not IS_WINDOWS:
-        log.error("目前只支援 Windows 斷網")
+        log.error(tr("目前只支援 Windows 斷網", "Cutting the network is only supported on Windows"))
         return False
     st = load_state()
     try:
@@ -890,15 +968,17 @@ def disconnect_network() -> bool:
         rc, _, err = _ps("Get-NetAdapter | Where-Object {$_.Status -ne 'Disabled'} "
                          "| Disable-NetAdapter -Confirm:$false")
         if rc != 0:
-            log.error("停用網路卡時出現錯誤：%s", err)
+            log.error(tr("停用網路卡時出現錯誤：%s", "Error while disabling network adapters: %s"), err)
     except Exception:
-        log.exception("停用網路卡失敗")
+        log.exception(tr("停用網路卡失敗", "Failed to disable network adapters"))
 
     up = adapters_up()
     if up == "0":
-        log.critical("已停用所有網路卡：%s", ", ".join(st.get("disabled_adapters", [])))
+        log.critical(tr("已停用所有網路卡：%s", "All network adapters disabled: %s"),
+                     ", ".join(st.get("disabled_adapters", [])))
         return True
-    log.error("仍有網路卡在線上（%s），改用防火牆封鎖與備援方式斷線", up)
+    log.error(tr("仍有網路卡在線上（%s），改用防火牆封鎖與備援方式斷線",
+                 "Network adapters still up (%s); falling back to firewall block and disconnect"), up)
     block_firewall()
     _run([sys_exe("ipconfig.exe"), "/release"])
     _run([sys_exe("netsh.exe"), "wlan", "disconnect"])
@@ -929,11 +1009,11 @@ def block_firewall():
         rc, _, err = _ps("Set-NetFirewallProfile -All -Enabled True "
                          "-DefaultInboundAction Block -DefaultOutboundAction Block")
         if rc == 0:
-            log.critical("已用防火牆封鎖所有進出連線")
+            log.critical(tr("已用防火牆封鎖所有進出連線", "Firewall now blocks all inbound and outbound connections"))
         else:
-            log.error("防火牆封鎖失敗：%s", err)
+            log.error(tr("防火牆封鎖失敗：%s", "Firewall block failed: %s"), err)
     except Exception:
-        log.exception("防火牆封鎖失敗")
+        log.exception(tr("防火牆封鎖失敗", "Firewall block failed"))
 
 
 def keep_offline(proc):
@@ -941,7 +1021,8 @@ def keep_offline(proc):
     while proc.poll() is None:
         time.sleep(10)
         if proc.poll() is None and adapters_up() not in ("0", "?"):
-            log.warning("偵測到網路卡被重新啟用，再次切斷網路")
+            log.warning(tr("偵測到網路卡被重新啟用，再次切斷網路",
+                           "A network adapter was re-enabled; cutting the network again"))
             disconnect_network()
 
 
@@ -956,19 +1037,22 @@ def network_cut(st: dict) -> bool:
 def restore_network(report=print) -> bool:
     """恢復網路卡與防火牆設定、重設誘餌檔，再重新開啟背景監控。"""
     if IS_WINDOWS and not is_admin():
-        report("需要以系統管理員身分執行才能恢復網路。")
+        report(tr("需要以系統管理員身分執行才能恢復網路。",
+                  "Administrator rights are needed to restore the network."))
         return False
     st = load_state()
     if st.get("triggered_at"):
-        report(f"RansomGuard 在 {st['triggered_at']} 切斷了網路。")
+        report(tr(f"RansomGuard 在 {st['triggered_at']} 切斷了網路。",
+                  f"RansomGuard cut off the network at {st['triggered_at']}."))
     installed = bool(task_state())
-    report("停止監控（避免重設誘餌檔時又觸發）...")
+    report(tr("停止監控（避免重設誘餌檔時又觸發）...",
+              "Stopping monitoring (so resetting canary files doesn't trigger it again)..."))
     stop_monitor()
 
     ok = True
     names = st.get("disabled_adapters") or []
     if names:
-        report("重新啟用網路卡...")
+        report(tr("重新啟用網路卡...", "Re-enabling network adapters..."))
         # 一張一張啟用：其中一張不見了（例如拔掉的 USB 網卡）也不影響其他張
         _, out, err = _ps(
             f"$t = @(Get-NetAdapter -Name @({','.join(_ps_quote(n) for n in names)}) "
@@ -979,46 +1063,55 @@ def restore_network(report=print) -> bool:
         lines = [l.split("\t") for l in out.splitlines() if l.strip()]
         for r in lines:
             if r[0] == "OK":
-                log.info("已重新啟用網路卡：%s", r[1])
-                report(f"  已啟用 {r[1]}")
+                log.info(tr("已重新啟用網路卡：%s", "Network adapter re-enabled: %s"), r[1])
+                report(tr(f"  已啟用 {r[1]}", f"  Enabled {r[1]}"))
             else:
                 ok = False
-                log.error("無法啟用網路卡 %s：%s", r[1], r[-1])
-                report(f"  無法啟用 {r[1]}：{r[-1]}")
+                log.error(tr("無法啟用網路卡 %s：%s", "Could not enable network adapter %s: %s"), r[1], r[-1])
+                report(tr(f"  無法啟用 {r[1]}：{r[-1]}", f"  Could not enable {r[1]}: {r[-1]}"))
         if not lines:
-            report("  網路卡都已經是啟用狀態" + (f"（{err}）" if err else ""))
+            report(tr("  網路卡都已經是啟用狀態", "  All network adapters are already enabled")
+                   + (f" ({err})" if err else ""))
     else:
-        report("沒有被本程式停用的網路卡。")
+        report(tr("沒有被本程式停用的網路卡。", "No network adapters were disabled by this program."))
     for p in st.get("firewall") or []:
         r = _ps(f"Set-NetFirewallProfile -Name {_ps_quote(p['Name'])} "
                 f"-Enabled {_ps_quote(p['Enabled'])} -DefaultInboundAction {_ps_quote(p['In'])} "
                 f"-DefaultOutboundAction {_ps_quote(p['Out'])}")
         if r[0] == 0:
-            log.info("已還原防火牆設定：%s", p["Name"])
-            report(f"  已還原防火牆設定 {p['Name']}")
+            log.info(tr("已還原防火牆設定：%s", "Firewall settings restored: %s"), p["Name"])
+            report(tr(f"  已還原防火牆設定 {p['Name']}", f"  Restored firewall settings for {p['Name']}"))
         else:
             ok = False
-            log.error("還原防火牆設定失敗（%s）：%s", p["Name"], r[2])
-            report(f"  還原防火牆設定失敗（{p['Name']}）：{r[2]}")
+            log.error(tr("還原防火牆設定失敗（%s）：%s", "Failed to restore firewall settings (%s): %s"),
+                      p["Name"], r[2])
+            report(tr(f"  還原防火牆設定失敗（{p['Name']}）：{r[2]}",
+                      f"  Failed to restore firewall settings ({p['Name']}): {r[2]}"))
     if network_cut(st):
         time.sleep(3)
         _run([sys_exe("ipconfig.exe"), "/renew"])
     if ok:
         save_state({})
     else:
-        report("部分設定沒有還原成功，請按 Win+R 輸入 ncpa.cpl 手動啟用網路卡。")
+        report(tr("部分設定沒有還原成功，請按 Win+R 輸入 ncpa.cpl 手動啟用網路卡。",
+                  "Some settings were not restored. Press Win+R, type ncpa.cpl and enable "
+                  "the network adapters manually."))
 
-    report("重設誘餌檔...")
+    report(tr("重設誘餌檔...", "Resetting canary files..."))
     remove_canaries()
     if installed:
-        report("重新開啟監控...")
-        report("  監控已重新啟動" if start_monitor() else
-               "  監控沒有正常啟動，請按「安裝／更新並開始監控」，或查看紀錄檔")
+        report(tr("重新開啟監控...", "Restarting monitoring..."))
+        report(tr("  監控已重新啟動", "  Monitoring restarted") if start_monitor() else
+               tr("  監控沒有正常啟動，請按「安裝／更新並開始監控」，或查看紀錄檔",
+                  "  Monitoring did not start. Click \"Install / update and start monitoring\" "
+                  "or check the log"))
     else:
-        report("尚未安裝背景監控（排程工作），所以沒有重新開啟監控。")
+        report(tr("尚未安裝背景監控（排程工作），所以沒有重新開啟監控。",
+                  "Background monitoring (scheduled task) is not installed, so it was not restarted."))
     up = adapters_up()
-    report(f"完成。目前連線中的網路卡：{up} 張" + (
-        "（Wi-Fi 可能需要幾秒鐘重新連線）" if up == "0" else ""))
+    report(tr(f"完成。目前連線中的網路卡：{up} 張", f"Done. Network adapters connected now: {up}") + (
+        tr("（Wi-Fi 可能需要幾秒鐘重新連線）", " (Wi-Fi may take a few seconds to reconnect)")
+        if up == "0" else ""))
     return ok
 
 
@@ -1029,7 +1122,7 @@ def remove_canaries():
             try:
                 (d / name).unlink(missing_ok=True)
             except OSError as ex:
-                log.warning("無法刪除誘餌檔 %s：%s", d / name, ex)
+                log.warning(tr("無法刪除誘餌檔 %s：%s", "Could not delete canary file %s: %s"), d / name, ex)
 
 
 # ---------------- 背景監控（排程工作）與安裝 ----------------
@@ -1061,7 +1154,7 @@ def stop_monitor():
     proc_enc = ps_encoded_args(PROC_PS1)[-1][:200]
     _ps(_KILL_PS1.replace("__ME__", f"{os.getpid()},{os.getppid()}")
         .replace("__PROC__", proc_enc))
-    log.info("已停止背景監控")
+    log.info(tr("已停止背景監控", "Background monitoring stopped"))
 
 
 def start_monitor() -> bool:
@@ -1085,20 +1178,23 @@ def desktop_lnk() -> Path:
 
 
 def restore_hint() -> str:
+    button = tr("「恢復網路並重新開啟監控」", "\"Restore network and restart monitoring\"")
     if desktop_lnk().exists():
-        return "開啟桌面上的「RansomGuard」，按「恢復網路並重新開啟監控」"
+        return tr(f"開啟桌面上的「RansomGuard」，按{button}",
+                  f"open \"RansomGuard\" on the desktop and click {button}")
     if FROZEN:
-        return f"執行 {sys.executable}，按「恢復網路並重新開啟監控」"
-    return f"雙擊 {Path(os.path.abspath(__file__)).parent / '恢復網路.bat'} 恢復網路"
+        return tr(f"執行 {sys.executable}，按{button}", f"run {sys.executable} and click {button}")
+    bat = Path(os.path.abspath(__file__)).parent / "恢復網路.bat"
+    return tr(f"雙擊 {bat} 恢復網路", f"double-click {bat} to restore the network")
 
 
 def install(report=print) -> bool:
     """複製到 Program Files、建立登入時以最高權限執行的排程工作與桌面捷徑，然後開始監控。"""
-    report("停止舊的監控...")
+    report(tr("停止舊的監控...", "Stopping the old monitor..."))
     stop_monitor()
     if FROZEN and norm(sys.executable) != norm(INSTALL_EXE):
         # 以系統管理員執行的程式放在只有管理員能改的資料夾，才不會被偷換
-        report(f"複製程式到 {INSTALL_DIR} ...")
+        report(tr(f"複製程式到 {INSTALL_DIR} ...", f"Copying the program to {INSTALL_DIR} ..."))
         INSTALL_DIR.mkdir(parents=True, exist_ok=True)
         for i in range(10):
             try:
@@ -1110,7 +1206,7 @@ def install(report=print) -> bool:
                 time.sleep(1)
     exe, args = launcher()
     workdir = str(INSTALL_DIR if FROZEN else Path(os.path.abspath(__file__)).parent)
-    report("建立登入時自動執行的排程工作...")
+    report(tr("建立登入時自動執行的排程工作...", "Creating a scheduled task that runs at sign-in..."))
     rc, _, err = _ps(
         r'$u = "$env:USERDOMAIN\$env:USERNAME"; '
         f"$a = New-ScheduledTaskAction -Execute {_ps_quote(exe)} "
@@ -1121,50 +1217,56 @@ def install(report=print) -> bool:
         "-ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew "
         "-RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); "
         f"Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $a -Trigger $t "
-        f"-Principal $p -Settings $s -Description {_ps_quote('偵測勒索病毒行為並自動切斷網路')} "
+        f"-Principal $p -Settings $s "
+        f"-Description {_ps_quote(tr('偵測勒索病毒行為並自動切斷網路', 'Detects ransomware behavior and cuts off the network automatically'))} "
         "-Force -ErrorAction Stop | Out-Null")
     if rc != 0:
-        raise RuntimeError(f"建立排程工作失敗：{err}")
-    report("建立桌面捷徑「RansomGuard」...")
+        raise RuntimeError(tr(f"建立排程工作失敗：{err}", f"Failed to create the scheduled task: {err}"))
+    report(tr("建立桌面捷徑「RansomGuard」...", "Creating the \"RansomGuard\" desktop shortcut..."))
     _ps(f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({_ps_quote(str(desktop_lnk()))}); "
         f"$s.TargetPath = {_ps_quote(exe)}; $s.Arguments = {_ps_quote((args + ' --gui').strip() if args else '')}; "
-        f"$s.WorkingDirectory = {_ps_quote(workdir)}; $s.Description = 'RansomGuard 控制台'; $s.Save()")
-    report("開始監控...")
+        f"$s.WorkingDirectory = {_ps_quote(workdir)}; "
+        f"$s.Description = {_ps_quote(tr('RansomGuard 控制台', 'RansomGuard control panel'))}; $s.Save()")
+    report(tr("開始監控...", "Starting monitoring..."))
     ok = start_monitor()
-    log.info("已安裝背景監控：%s %s", exe, args)
-    report("完成！監控已在背景執行，之後每次登入 Windows 都會自動啟動。" if ok else
-           f"排程工作已建立，但監控目前狀態是 {task_state() or '未知'}，請查看紀錄檔。")
+    log.info(tr("已安裝背景監控：%s %s", "Background monitoring installed: %s %s"), exe, args)
+    report(tr("完成！監控已在背景執行，之後每次登入 Windows 都會自動啟動。",
+              "Done! Monitoring is running in the background and starts every time you sign in to Windows.")
+           if ok else
+           tr(f"排程工作已建立，但監控目前狀態是 {task_state() or '未知'}，請查看紀錄檔。",
+              f"The scheduled task was created, but monitoring is {task_state() or 'unknown'}. "
+              "Please check the log."))
     return ok
 
 
 def uninstall(report=print) -> bool:
-    report("停止監控...")
+    report(tr("停止監控...", "Stopping monitoring..."))
     stop_monitor()
     _, _, err = _ps(f"Unregister-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} "
                      "-Confirm:$false -ErrorAction SilentlyContinue")
     if task_state():
-        report(f"刪除排程工作失敗：{err}")
+        report(tr(f"刪除排程工作失敗：{err}", f"Failed to delete the scheduled task: {err}"))
         return False
-    report("已刪除排程工作")
+    report(tr("已刪除排程工作", "Scheduled task deleted"))
     desktop_lnk().unlink(missing_ok=True)
     remove_canaries()
-    report("已刪除桌面捷徑與誘餌檔")
+    report(tr("已刪除桌面捷徑與誘餌檔", "Desktop shortcut and canary files deleted"))
     if INSTALL_EXE.exists():
         if FROZEN and norm(sys.executable) == norm(INSTALL_EXE):
             # 正在執行的檔案刪不掉：交給 Windows 在下次開機時刪除
             k32 = ctypes.WinDLL("kernel32", use_last_error=True)
             k32.MoveFileExW(str(INSTALL_EXE), None, 4)  # MOVEFILE_DELAY_UNTIL_REBOOT
             k32.MoveFileExW(str(INSTALL_DIR), None, 4)
-            report(f"{INSTALL_EXE} 會在下次開機時刪除")
+            report(tr(f"{INSTALL_EXE} 會在下次開機時刪除", f"{INSTALL_EXE} will be deleted at the next restart"))
         else:
             try:
                 INSTALL_EXE.unlink()
                 INSTALL_DIR.rmdir()
-                report(f"已刪除 {INSTALL_DIR}")
+                report(tr(f"已刪除 {INSTALL_DIR}", f"Deleted {INSTALL_DIR}"))
             except OSError as ex:
-                report(f"無法刪除 {INSTALL_DIR}：{ex}")
-    log.info("已解除安裝背景監控")
-    report("解除安裝完成。")
+                report(tr(f"無法刪除 {INSTALL_DIR}：{ex}", f"Could not delete {INSTALL_DIR}: {ex}"))
+    log.info(tr("已解除安裝背景監控", "Background monitoring uninstalled"))
+    report(tr("解除安裝完成。", "Uninstall complete."))
     return True
 
 
@@ -1172,17 +1274,23 @@ def uninstall(report=print) -> bool:
 def status_info():
     """控制台的兩張狀態卡：((文字, 燈號, 說明), (文字, 燈號, 說明))，燈號是 ok / warn / bad / off。"""
     s = task_state()
-    mon = {"Running": ("執行中", "ok", "每次登入 Windows 都會自動啟動"),
-           "Ready": ("已停止", "warn", "目前沒有勒索病毒防護"),
-           "Disabled": ("已停用", "warn", "目前沒有勒索病毒防護"),
-           "": ("尚未安裝", "off", "按「安裝／更新並開始監控」")}.get(s, (s, "warn", ""))
+    unprotected = tr("目前沒有勒索病毒防護", "No ransomware protection right now")
+    mon = {"Running": (tr("執行中", "Running"), "ok",
+                       tr("每次登入 Windows 都會自動啟動", "Starts every time you sign in to Windows")),
+           "Ready": (tr("已停止", "Stopped"), "warn", unprotected),
+           "Disabled": (tr("已停用", "Disabled"), "warn", unprotected),
+           "": (tr("尚未安裝", "Not installed"), "off",
+                tr("按「安裝／更新並開始監控」", "Click \"Install / update and start monitoring\""))
+           }.get(s, (s, "warn", ""))
     st = load_state()
+    cut = tr("已切斷", "Cut off")
     if st.get("triggered_at"):
-        net = ("已切斷", "bad", f"{st['triggered_at']} 偵測到可疑行為")
+        net = (cut, "bad", tr(f"{st['triggered_at']} 偵測到可疑行為",
+                              f"Suspicious activity detected at {st['triggered_at']}"))
     elif network_cut(st):
-        net = ("已切斷", "bad", "確認安全後再恢復網路")
+        net = (cut, "bad", tr("確認安全後再恢復網路", "Restore it once you're sure it's safe"))
     else:
-        net = ("正常", "ok", "連線沒有被限制")
+        net = (tr("正常", "Normal"), "ok", tr("連線沒有被限制", "The connection is not restricted"))
     return mon, net
 
 
@@ -1196,7 +1304,8 @@ def gui():
         params = subprocess.list2cmdline([*script, *sys.argv[1:]])
         if ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1) > 32:
             return
-        messagebox.showerror("RansomGuard", "需要系統管理員權限才能使用控制台。")
+        messagebox.showerror("RansomGuard", tr("需要系統管理員權限才能使用控制台。",
+                                               "Administrator rights are needed to use the control panel."))
         return
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # 高解析度螢幕上字才不會糊
@@ -1204,7 +1313,6 @@ def gui():
         pass
 
     root = tk.Tk()
-    root.title("RansomGuard 控制台")
     root.resizable(False, False)
     icon = sys.executable if FROZEN else os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
     try:
@@ -1216,7 +1324,6 @@ def gui():
     def px(n):
         return int(n * scale)
 
-    FONT = "Microsoft JhengHei UI"
     C = {"bg": "#f3f5f9", "card": "#ffffff", "border": "#dfe3eb", "header": "#1e293b",
          "text": "#1f2937", "muted": "#6b7280",
          "ok": "#16a34a", "warn": "#d97706", "bad": "#dc2626", "off": "#9ca3af"}
@@ -1224,15 +1331,17 @@ def gui():
     STYLES = {"primary": ("#2563eb", "#1d4ed8", "#ffffff", "#bfd0f7"),
               "success": ("#16a34a", "#15803d", "#ffffff", "#bde5cb"),
               "secondary": ("#ffffff", "#eef1f6", C["text"], "#c3c9d4"),
-              "danger": (C["bg"], "#fde8e8", C["bad"], "#e8b4b4")}
+              "danger": (C["bg"], "#fde8e8", C["bad"], "#e8b4b4"),
+              "header": (C["header"], "#334155", "#cbd5e1", "#64748b")}
     root.configure(bg=C["bg"])
 
     q = queue.Queue()
     buttons = []
+    w = {}  # 目前畫面上的元件；切換語言時整個畫面重建
 
     def make_button(parent, text, cmd, name):
         rim = tk.Frame(parent)  # 1px 外框（tk 按鈕本身的框線在 Windows 上只能是黑色）
-        b = tk.Button(rim, text=text, command=cmd, font=(FONT, 11), relief="flat", bd=0,
+        b = tk.Button(rim, text=text, command=cmd, font=(w["font"], 11), relief="flat", bd=0,
                       highlightthickness=0, cursor="hand2", padx=px(12), pady=px(7))
         b.pack(fill="both", padx=1, pady=1)
         buttons.append(b)
@@ -1257,61 +1366,17 @@ def gui():
         b.bind("<Enter>", enter)
         b.bind("<Leave>", leave)
 
-    # 標題列
-    hdr = tk.Frame(root, bg=C["header"])
-    hdr.pack(fill="x")
-    top = tk.Frame(hdr, bg=C["header"])
-    top.pack(fill="x", padx=px(22), pady=(px(16), 0))
-    tk.Label(top, text="RansomGuard", font=(FONT, 17, "bold"), fg="#ffffff",
-             bg=C["header"]).pack(side="left")
-    tk.Label(top, text=f"v{VERSION}", font=(FONT, 10), fg="#94a3b8",
-             bg=C["header"]).pack(side="left", anchor="s", padx=(px(8), 0), pady=(0, px(4)))
-    tk.Label(hdr, text="偵測勒索病毒行為，發現異常時自動切斷網路", font=(FONT, 10), fg="#cbd5e1",
-             bg=C["header"]).pack(anchor="w", padx=px(22), pady=(px(2), px(16)))
-
-    body = tk.Frame(root, bg=C["bg"])
-    body.pack(fill="both", padx=px(22), pady=(px(18), px(16)))
-
-    # 狀態卡
-    cards = tk.Frame(body, bg=C["bg"])
-    cards.pack(fill="x")
-    cards.columnconfigure((0, 1), weight=1, uniform="card")
-
-    def card(col, title):
-        f = tk.Frame(cards, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
-        f.grid(row=0, column=col, sticky="nsew", padx=(0, px(6)) if col == 0 else (px(6), 0))
-        tk.Label(f, text=title, font=(FONT, 10), fg=C["muted"],
-                 bg=C["card"]).pack(anchor="w", padx=px(16), pady=(px(12), 0))
-        row = tk.Frame(f, bg=C["card"])
-        row.pack(anchor="w", padx=px(16))
-        dot = tk.Label(row, text="●", font=(FONT, 12), fg=C["off"], bg=C["card"])
-        dot.pack(side="left")
-        val = tk.Label(row, text="讀取中...", font=(FONT, 15, "bold"), fg=C["text"], bg=C["card"])
-        val.pack(side="left", padx=(px(4), 0))
-        detail = tk.Label(f, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"],
-                          justify="left", wraplength=px(230))
-        detail.pack(anchor="w", padx=px(16), pady=(0, px(12)))
-        return dot, val, detail
-
-    mon_card = card(0, "背景監控")
-    net_card = card(1, "網路")
-
     def show_status(info):
-        for (dot, val, detail), (text, level, note) in zip((mon_card, net_card), info):
+        for (dot, val, detail), (text, level, note) in zip((w["mon"], w["net"]), info):
             dot.config(fg=C[level])
             val.config(text=text, fg=C["bad"] if level == "bad" else C["text"])
             detail.config(text=note or " ")
         cut = info[1][1] == "bad"  # 斷網時改成強調「恢復網路」
-        style(install_btn, "secondary" if cut else "primary")
-        style(restore_btn, "success" if cut else "secondary")
-
-    def section(title):
-        row = tk.Frame(body, bg=C["bg"])
-        row.pack(fill="x", pady=(px(18), px(6)))
-        tk.Label(row, text=title, font=(FONT, 10, "bold"), fg=C["muted"], bg=C["bg"]).pack(side="left")
-        return row
+        style(w["install"], "secondary" if cut else "primary")
+        style(w["restore"], "success" if cut else "secondary")
 
     def write(msg, tag=None):
+        out = w["out"]
         out.config(state="normal")
         out.insert("end", msg + "\n", tag)
         out.see("end")
@@ -1326,17 +1391,17 @@ def gui():
     def run_bg(fn):
         for b in buttons:
             b.config(state="disabled")
-        busy.config(text="執行中...")
-        out.config(state="normal")
-        out.delete("1.0", "end")
-        out.config(state="disabled")
+        w["busy"].config(text=tr("執行中...", "Working..."))
+        w["out"].config(state="normal")
+        w["out"].delete("1.0", "end")
+        w["out"].config(state="disabled")
 
         def work():
             try:
                 fn(report)
             except Exception as ex:
-                log.exception("控制台操作失敗")
-                report(f"[失敗] {ex}")
+                log.exception(tr("控制台操作失敗", "Control panel action failed"))
+                report(tr(f"[失敗] {ex}", f"[Failed] {ex}"))
             q.put(("done", None))
         threading.Thread(target=work, daemon=True).start()
 
@@ -1345,13 +1410,13 @@ def gui():
             while True:
                 kind, msg = q.get_nowait()
                 if kind == "msg":
-                    write(msg, "err" if msg.startswith("[失敗]") else None)
+                    write(msg, "err" if msg.startswith(("[失敗]", "[Failed]")) else None)
                 elif kind == "status":
                     show_status(msg)
                 else:
                     for b in buttons:
                         b.config(state="normal")
-                    busy.config(text="")
+                    w["busy"].config(text="")
                     refresh()
         except queue.Empty:
             pass
@@ -1359,67 +1424,155 @@ def gui():
 
     def on_restore():
         if network_cut(load_state()) and not messagebox.askyesno(
-                "恢復網路", "請先確認這次是測試或誤判，而不是真的中了勒索病毒。\n\n確定要恢復網路嗎？",
+                tr("恢復網路", "Restore network"),
+                tr("請先確認這次是測試或誤判，而不是真的中了勒索病毒。\n\n確定要恢復網路嗎？",
+                   "First make sure this was a test or a false alarm, not a real ransomware "
+                   "infection.\n\nRestore the network?"),
                 icon="warning"):
             return
         run_bg(restore_network)
 
     def on_stop():
-        if messagebox.askyesno("停止監控", "停止後電腦就沒有勒索病毒防護，直到重新開啟監控或下次登入。\n確定要停止嗎？"):
-            run_bg(lambda rep: (stop_monitor(), rep("監控已停止。")))
+        if messagebox.askyesno(tr("停止監控", "Stop monitoring"),
+                               tr("停止後電腦就沒有勒索病毒防護，直到重新開啟監控或下次登入。\n確定要停止嗎？",
+                                  "This computer will have no ransomware protection until monitoring "
+                                  "is restarted or you sign in again.\nStop monitoring?")):
+            run_bg(lambda rep: (stop_monitor(), rep(tr("監控已停止。", "Monitoring stopped."))))
 
     def on_uninstall():
+        title = tr("解除安裝", "Uninstall")
         if network_cut(load_state()):
-            messagebox.showinfo("解除安裝", "網路目前被切斷，請先按「恢復網路並重新開啟監控」。")
+            messagebox.showinfo(title, tr("網路目前被切斷，請先按「恢復網路並重新開啟監控」。",
+                                          "The network is cut off. Click \"Restore network and "
+                                          "restart monitoring\" first."))
             return
-        if messagebox.askyesno("解除安裝", "確定要移除背景監控、桌面捷徑與誘餌檔嗎？"):
+        if messagebox.askyesno(title, tr("確定要移除背景監控、桌面捷徑與誘餌檔嗎？",
+                                         "Remove background monitoring, the desktop shortcut and "
+                                         "the canary files?")):
             run_bg(uninstall)
 
     def on_preview():
-        run_bg(lambda rep: (rep("警告畫面開啟中，按「我知道了」即可關閉。"),
-                            fullscreen_alert("這是警告畫面的預覽，沒有偵測到任何東西", "test")))
+        run_bg(lambda rep: (rep(tr("警告畫面開啟中，按「我知道了」即可關閉。",
+                                   "Opening the warning. Click \"I understand\" to close it.")),
+                            fullscreen_alert(tr("這是警告畫面的預覽，沒有偵測到任何東西",
+                                                "This is a preview of the warning; nothing was detected"),
+                                             "test")))
 
     def on_log():
         p = app_dir() / "guard.log"
         if p.exists():
             os.startfile(p)
         else:
-            messagebox.showinfo("紀錄檔", "還沒有紀錄檔。")
+            messagebox.showinfo(tr("紀錄檔", "Log"), tr("還沒有紀錄檔。", "There is no log file yet."))
 
-    # 操作按鈕
-    section("操作")
-    acts = tk.Frame(body, bg=C["bg"])
-    acts.pack(fill="x")
-    acts.columnconfigure((0, 1), weight=1, uniform="btn")
-    rim, install_btn = make_button(acts, "安裝／更新並開始監控", lambda: run_bg(install), "primary")
-    install_btn.config(font=(FONT, 12, "bold"), pady=px(9))
-    rim.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(8)))
-    for i, (text, cmd) in enumerate([("恢復網路並重新開啟監控", on_restore), ("停止監控", on_stop),
-                                     ("預覽警告畫面", on_preview), ("開啟紀錄檔", on_log)]):
-        rim, b = make_button(acts, text, cmd, "secondary")
-        rim.grid(row=1 + i // 2, column=i % 2, sticky="ew", pady=(0, px(8)),
-                 padx=(0, px(4)) if i % 2 == 0 else (px(4), 0))
-        if i == 0:
-            restore_btn = b
+    def on_lang():
+        set_lang("en" if LANG == "zh" else "zh")
+        build()
+        refresh()
 
-    # 執行紀錄
-    busy = tk.Label(section("執行紀錄"), text="", font=(FONT, 10), fg=C["ok"], bg=C["bg"])
-    busy.pack(side="right")
-    out = scrolledtext.ScrolledText(body, width=60, height=9, font=(FONT, 10), wrap="word",
-                                    relief="flat", bd=0, bg=C["card"], fg=C["text"],
-                                    highlightthickness=1, highlightbackground=C["border"],
-                                    highlightcolor=C["border"], padx=px(10), pady=px(8))
-    out.pack(fill="x")
-    out.tag_config("hint", foreground=C["muted"])
-    out.tag_config("err", foreground=C["bad"])
-    write("按上方按鈕執行操作，進度會顯示在這裡。", "hint")
+    def build():
+        if "frame" in w:
+            w["frame"].destroy()
+        buttons.clear()
+        w["font"] = FONT = tr("Microsoft JhengHei UI", "Segoe UI")
+        root.title(tr("RansomGuard 控制台", "RansomGuard Control Panel"))
+        w["frame"] = frame = tk.Frame(root, bg=C["bg"])
+        frame.pack(fill="both")
 
-    foot = tk.Frame(body, bg=C["bg"])
-    foot.pack(fill="x", pady=(px(10), 0))
-    rim, b = make_button(foot, "解除安裝", on_uninstall, "danger")
-    b.config(font=(FONT, 10), padx=px(10), pady=px(4))
-    rim.pack(side="right")
+        # 標題列
+        hdr = tk.Frame(frame, bg=C["header"])
+        hdr.pack(fill="x")
+        top = tk.Frame(hdr, bg=C["header"])
+        top.pack(fill="x", padx=px(22), pady=(px(16), 0))
+        tk.Label(top, text="RansomGuard", font=(FONT, 17, "bold"), fg="#ffffff",
+                 bg=C["header"]).pack(side="left")
+        tk.Label(top, text=f"v{VERSION}", font=(FONT, 10), fg="#94a3b8",
+                 bg=C["header"]).pack(side="left", anchor="s", padx=(px(8), 0), pady=(0, px(4)))
+        # 切換語言：按鈕上寫的是「另一種」語言
+        rim, b = make_button(top, tr("English", "中文"), on_lang, "header")
+        b.config(font=(tr("Segoe UI", "Microsoft JhengHei UI"), 10), padx=px(10), pady=px(2))
+        rim.pack(side="right")
+        tk.Label(hdr, text=tr("偵測勒索病毒行為，發現異常時自動切斷網路",
+                              "Detects ransomware behavior and cuts off the network automatically"),
+                 font=(FONT, 10), fg="#cbd5e1", bg=C["header"]).pack(anchor="w", padx=px(22),
+                                                                    pady=(px(2), px(16)))
 
+        body = tk.Frame(frame, bg=C["bg"])
+        body.pack(fill="both", padx=px(22), pady=(px(18), px(16)))
+
+        # 狀態卡
+        cards = tk.Frame(body, bg=C["bg"])
+        cards.pack(fill="x")
+        cards.columnconfigure((0, 1), weight=1, uniform="card")
+
+        def card(col, title):
+            f = tk.Frame(cards, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
+            f.grid(row=0, column=col, sticky="nsew", padx=(0, px(6)) if col == 0 else (px(6), 0))
+            tk.Label(f, text=title, font=(FONT, 10), fg=C["muted"],
+                     bg=C["card"]).pack(anchor="w", padx=px(16), pady=(px(12), 0))
+            row = tk.Frame(f, bg=C["card"])
+            row.pack(anchor="w", padx=px(16))
+            # 燈號固定用正黑體：Segoe UI 的 ● 很小
+            dot = tk.Label(row, text="●", font=("Microsoft JhengHei UI", 12), fg=C["off"], bg=C["card"])
+            dot.pack(side="left")
+            val = tk.Label(row, text=tr("讀取中...", "Loading..."), font=(FONT, 15, "bold"),
+                           fg=C["text"], bg=C["card"])
+            val.pack(side="left", padx=(px(4), 0))
+            detail = tk.Label(f, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"],
+                              justify="left", wraplength=px(230))
+            detail.pack(anchor="w", padx=px(16), pady=(0, px(12)))
+            return dot, val, detail
+
+        w["mon"] = card(0, tr("背景監控", "Background monitoring"))
+        w["net"] = card(1, tr("網路", "Network"))
+
+        def section(title):
+            row = tk.Frame(body, bg=C["bg"])
+            row.pack(fill="x", pady=(px(18), px(6)))
+            tk.Label(row, text=title, font=(FONT, 10, "bold"), fg=C["muted"], bg=C["bg"]).pack(side="left")
+            return row
+
+        # 操作按鈕
+        section(tr("操作", "Actions"))
+        acts = tk.Frame(body, bg=C["bg"])
+        acts.pack(fill="x")
+        acts.columnconfigure((0, 1), weight=1, uniform="btn")
+        rim, w["install"] = make_button(acts, tr("安裝／更新並開始監控", "Install / update and start monitoring"),
+                                        lambda: run_bg(install), "primary")
+        w["install"].config(font=(FONT, 12, "bold"), pady=px(9))
+        rim.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(8)))
+        for i, (text, cmd) in enumerate([
+                (tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore),
+                (tr("停止監控", "Stop monitoring"), on_stop),
+                (tr("預覽警告畫面", "Preview warning"), on_preview),
+                (tr("開啟紀錄檔", "Open log"), on_log)]):
+            rim, b = make_button(acts, text, cmd, "secondary")
+            rim.grid(row=1 + i // 2, column=i % 2, sticky="ew", pady=(0, px(8)),
+                     padx=(0, px(4)) if i % 2 == 0 else (px(4), 0))
+            if i == 0:
+                w["restore"] = b
+
+        # 執行紀錄
+        w["busy"] = tk.Label(section(tr("執行紀錄", "Activity")), text="", font=(FONT, 10),
+                             fg=C["ok"], bg=C["bg"])
+        w["busy"].pack(side="right")
+        w["out"] = out = scrolledtext.ScrolledText(
+            body, width=60, height=9, font=(FONT, 10), wrap="word", relief="flat", bd=0,
+            bg=C["card"], fg=C["text"], highlightthickness=1, highlightbackground=C["border"],
+            highlightcolor=C["border"], padx=px(10), pady=px(8))
+        out.pack(fill="x")
+        out.tag_config("hint", foreground=C["muted"])
+        out.tag_config("err", foreground=C["bad"])
+        write(tr("按上方按鈕執行操作，進度會顯示在這裡。", "Click a button above; progress is shown here."),
+              "hint")
+
+        foot = tk.Frame(body, bg=C["bg"])
+        foot.pack(fill="x", pady=(px(10), 0))
+        rim, b = make_button(foot, tr("解除安裝", "Uninstall"), on_uninstall, "danger")
+        b.config(font=(FONT, 10), padx=px(10), pady=px(4))
+        rim.pack(side="right")
+
+    build()
     refresh()
     pump()
     root.update_idletasks()  # 視窗置中偏上
@@ -1431,14 +1584,16 @@ def gui():
 # ---------------- 主程式 ----------------
 def respond(reason: str, dry_run: bool):
     """觸發後的處理。回傳全螢幕警告的程序（可能是 None）。"""
-    log.critical("偵測到疑似勒索病毒行為：%s", reason)
+    log.critical(tr("偵測到疑似勒索病毒行為：%s", "Possible ransomware behavior detected: %s"), reason)
     if dry_run:
-        log.warning("[測試模式] 正式模式下，此時會切斷網路")
+        log.warning(tr("[測試模式] 正式模式下，此時會切斷網路",
+                       "[Test mode] In normal mode the network would be cut off now"))
         return fullscreen_alert(reason, "test")
     ok = disconnect_network()
+    init_lang()  # 警告用控制台裡最新選的語言（監控可能在換語言前就啟動了）
     proc = fullscreen_alert(reason, "cut" if ok else "partial")
     if HIBERNATE_ON_TRIGGER:
-        log.critical("依設定立即休眠")
+        log.critical(tr("依設定立即休眠", "Hibernating now, as configured"))
         time.sleep(3)  # 讓警告先出現，醒來時就會看到
         _run([sys_exe("shutdown.exe"), "/h"])
     return proc
@@ -1449,30 +1604,35 @@ def run(args):
     try:
         from watchdog.observers import Observer
     except ImportError:
-        msg = "缺少 watchdog 套件，請先執行：pip install watchdog"
+        msg = tr("缺少 watchdog 套件，請先執行：pip install watchdog",
+                 "The watchdog package is missing. Run: pip install watchdog")
         log.error(msg)
-        alert("RansomGuard 無法啟動", msg)
+        alert(tr("RansomGuard 無法啟動", "RansomGuard could not start"), msg)
         sys.exit(1)
 
     if IS_WINDOWS and not args.dry_run and not is_admin():
-        msg = "需要系統管理員權限才能切斷網路。\n請用「以系統管理員身分執行」啟動，或改用 --dry-run 測試。"
+        msg = tr("需要系統管理員權限才能切斷網路。\n請用「以系統管理員身分執行」啟動，或改用 --dry-run 測試。",
+                 "Administrator rights are needed to cut off the network.\n"
+                 "Start it with \"Run as administrator\", or use --dry-run to test.")
         log.error(msg)
-        alert("RansomGuard 無法啟動", msg)
+        alert(tr("RansomGuard 無法啟動", "RansomGuard could not start"), msg)
         sys.exit(1)
     if not args.dry_run and not single_instance():
-        log.info("已經有監控在執行，這次不再啟動")
+        log.info(tr("已經有監控在執行，這次不再啟動", "Monitoring is already running; not starting again"))
         sys.exit(0)
 
     st = load_state()
     if st.get("triggered_at"):
-        alert("RansomGuard 提醒",
-              f"上次在 {st['triggered_at']} 偵測到疑似勒索病毒並切斷了網路。\n"
-              f"確認電腦安全後，{restore_hint()}。")
+        alert(tr("RansomGuard 提醒", "RansomGuard reminder"),
+              tr(f"上次在 {st['triggered_at']} 偵測到疑似勒索病毒並切斷了網路。\n"
+                 f"確認電腦安全後，{restore_hint()}。",
+                 f"Possible ransomware was detected at {st['triggered_at']} and the network was cut off.\n"
+                 f"Once you're sure the computer is safe, {restore_hint()}."))
 
     watch_dirs = [Path(p) for p in args.watch] if args.watch else default_watch_dirs()
     watch_dirs = [d for d in watch_dirs if d.is_dir()]
     if not watch_dirs:
-        log.error("沒有可監控的資料夾")
+        log.error(tr("沒有可監控的資料夾", "No folders to watch"))
         sys.exit(1)
     canaries = plant_canaries(watch_dirs if args.watch else default_canary_dirs())
 
@@ -1484,8 +1644,10 @@ def run(args):
             if proc is not None:
                 keep_offline(proc)  # 等使用者關掉警告再結束，避免警告視窗跟著程式被關掉
                 if proc.returncode != 0:  # 視窗中途出錯：改用一般警告，至少要讓你知道
-                    log.error("全螢幕警告異常結束（代碼 %s）", proc.returncode)
-                    alert("RansomGuard：偵測到疑似勒索病毒，網路已切斷", reason)
+                    log.error(tr("全螢幕警告異常結束（代碼 %s）", "Full-screen warning ended abnormally (code %s)"),
+                              proc.returncode)
+                    alert(tr("RansomGuard：偵測到疑似勒索病毒，網路已切斷",
+                             "RansomGuard: possible ransomware detected, network cut off"), reason)
                     time.sleep(60)
             stop.set()
 
@@ -1506,9 +1668,10 @@ def run(args):
         procmon.start()
     restarts = 0
 
-    log.info("RansomGuard %s 開始監控%s：%s", VERSION, "（測試模式）" if args.dry_run else "",
+    log.info(tr("RansomGuard %s 開始監控%s：%s", "RansomGuard %s started monitoring%s: %s"), VERSION,
+             tr("（測試模式）", " (test mode)") if args.dry_run else "",
              "; ".join(str(d) for d in watch_dirs))
-    log.info("誘餌檔：%s", "; ".join(str(p) for p in canaries))
+    log.info(tr("誘餌檔：%s", "Canary files: %s"), "; ".join(str(p) for p in canaries))
     try:
         last = time.time()
         while not stop.wait(1):
@@ -1519,47 +1682,68 @@ def run(args):
             # 監控元件意外停止（例如被監控的資料夾暫時消失）時自動重啟，最多 10 次
             if restarts < 10 and not observer.is_alive():
                 restarts += 1
-                log.error("檔案監控意外停止，重新啟動（第 %d 次）", restarts)
+                log.error(tr("檔案監控意外停止，重新啟動（第 %d 次）",
+                             "File monitor stopped unexpectedly; restarting (attempt %d)"), restarts)
                 observer = start_observer()
             if restarts < 10 and procmon is not None and not procmon.alive():
                 restarts += 1
-                log.error("程序監控意外停止，重新啟動（第 %d 次）", restarts)
+                log.error(tr("程序監控意外停止，重新啟動（第 %d 次）",
+                             "Process monitor stopped unexpectedly; restarting (attempt %d)"), restarts)
                 procmon.start()
     except KeyboardInterrupt:
-        log.info("使用者中止")
+        log.info(tr("使用者中止", "Stopped by user"))
     finally:
         if procmon is not None:
             procmon.stop()
         observer.stop()
         observer.join()
-        log.info("監控結束")
+        log.info(tr("監控結束", "Monitoring ended"))
 
 
 def main():
     fix_console_encoding()
-    ap = argparse.ArgumentParser(description="偵測勒索病毒行為並自動斷網")
+    langs = ["zh", "en"]
+    pre = argparse.ArgumentParser(add_help=False)  # 先讀 --lang，說明文字才會是對的語言
+    pre.add_argument("--lang", choices=langs)
+    init_lang(pre.parse_known_args()[0].lang)
+    ap = argparse.ArgumentParser(description=tr("偵測勒索病毒行為並自動斷網",
+                                                "Detects ransomware behavior and cuts off the network"))
     ap.add_argument("--version", action="version", version=f"RansomGuard {VERSION}")
-    ap.add_argument("--monitor", action="store_true", help="開始監控（.exe 不加參數會開啟控制台）")
-    ap.add_argument("--gui", action="store_true", help="開啟控制台")
-    ap.add_argument("--dry-run", action="store_true", help="測試模式，不會真的斷網")
-    ap.add_argument("--restore", action="store_true", help="恢復網路，並重新開啟背景監控")
-    ap.add_argument("--install", action="store_true", help="安裝／更新背景監控並開始監控")
-    ap.add_argument("--watch", action="append", metavar="DIR", help="自訂監控資料夾（可重複）")
-    ap.add_argument("--test-alert", action="store_true", help="只顯示全螢幕警告看看樣子，不偵測也不斷網")
+    ap.add_argument("--monitor", action="store_true",
+                    help=tr("開始監控（.exe 不加參數會開啟控制台）",
+                            "start monitoring (the .exe opens the control panel when run without options)"))
+    ap.add_argument("--gui", action="store_true", help=tr("開啟控制台", "open the control panel"))
+    ap.add_argument("--dry-run", action="store_true",
+                    help=tr("測試模式，不會真的斷網", "test mode: never actually cut off the network"))
+    ap.add_argument("--restore", action="store_true",
+                    help=tr("恢復網路，並重新開啟背景監控", "restore the network and restart background monitoring"))
+    ap.add_argument("--install", action="store_true",
+                    help=tr("安裝／更新背景監控並開始監控", "install / update background monitoring and start it"))
+    ap.add_argument("--watch", action="append", metavar="DIR",
+                    help=tr("自訂監控資料夾（可重複）", "watch a custom folder (can be repeated)"))
+    ap.add_argument("--test-alert", action="store_true",
+                    help=tr("只顯示全螢幕警告看看樣子，不偵測也不斷網",
+                            "only show the full-screen warning; no detection, no network cut"))
+    ap.add_argument("--lang", choices=langs,
+                    help=tr("介面語言：zh（中文）或 en（英文）；預設依 Windows 顯示語言",
+                            "interface language: zh (Chinese) or en (English); "
+                            "defaults to the Windows display language"))
     args = ap.parse_args()
     setup_logging()
     if args.test_alert:
-        fullscreen_alert("這是警告畫面的預覽（--test-alert），沒有偵測到任何東西", "test", wait=True)
+        fullscreen_alert(tr("這是警告畫面的預覽（--test-alert），沒有偵測到任何東西",
+                            "This is a preview of the warning (--test-alert); nothing was detected"),
+                         "test", wait=True)
     elif args.restore:
         restore_network(log.info)
     elif args.install:
         if IS_WINDOWS and not is_admin():
-            log.error("需要以系統管理員身分執行才能安裝")
+            log.error(tr("需要以系統管理員身分執行才能安裝", "Administrator rights are needed to install"))
             sys.exit(1)
         try:
             ok = install(log.info)
         except Exception:
-            log.exception("安裝失敗")
+            log.exception(tr("安裝失敗", "Install failed"))
             ok = False
         sys.exit(0 if ok else 1)
     elif args.gui or (FROZEN and not (args.monitor or args.dry_run or args.watch)):

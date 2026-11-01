@@ -10,6 +10,8 @@
 
 [所有版本與更新紀錄](https://github.com/leo-code-del/RansomGuard/releases)
 
+> 介面支援中文與英文：預設跟著 Windows 顯示語言（中文就用中文，其他語言用英文），控制台右上角的 **English / 中文** 按鈕可以隨時切換，背景監控跳出的警告也會用同一種語言。
+
 ## 安裝
 
 1. 按上方按鈕下載 `RansomGuard.exe`（只支援 Windows 10 / 11）。
@@ -58,6 +60,7 @@
 | 預覽警告畫面 | 看看觸發時的警告長什麼樣子，不會斷網 |
 | 開啟紀錄檔 | 紀錄檔位置：`%LOCALAPPDATA%\RansomGuard\guard.log` |
 | 解除安裝 | 移除背景監控、桌面捷徑與誘餌檔 |
+| English / 中文（右上角） | 切換介面語言 |
 
 ## 命令列參數
 
@@ -69,6 +72,7 @@ RansomGuard.exe --dry-run    測試模式：只記錄與跳窗，不會真的斷
 RansomGuard.exe --test-alert 預覽全螢幕警告
 RansomGuard.exe --watch D:\資料 --watch E:\備份   自訂監控資料夾
 RansomGuard.exe --version    顯示版本
+RansomGuard.exe --lang en    這次用英文介面（zh＝中文）
 ```
 
 ## 從原始碼執行與打包
@@ -94,12 +98,12 @@ python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon
 
 ### 發布新版
 
-1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.1.1"`。
+1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.2.1"`。
 2. 重新打包，提交並推送。
 3. 建立 Release 並附上 exe：
 
    ```
-   gh release create v1.1.1 dist\RansomGuard.exe --title "RansomGuard 1.1.1" --notes "更新內容..."
+   gh release create v1.2.1 dist\RansomGuard.exe --title "RansomGuard 1.2.1" --notes "更新內容..."
    ```
 
 README 的下載按鈕永遠指向最新版本，不需要修改。

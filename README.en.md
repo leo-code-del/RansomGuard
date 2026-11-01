@@ -10,14 +10,14 @@ Detects ransomware encryption behavior and **cuts off the network automatically*
 
 [All versions and release notes](https://github.com/leo-code-del/RansomGuard/releases)
 
-> The program's interface is in Traditional Chinese. Button names below are given in Chinese, followed by an English translation, so you can find them on screen.
+> The interface is available in English and Traditional Chinese. It follows your Windows display language (Chinese → Chinese, anything else → English). Switch it any time with the **中文 / English** button in the top-right corner of the control panel; the background monitor's warnings use the same language.
 
 ## Install
 
 1. Download `RansomGuard.exe` with the button above (Windows 10 / 11 only).
 2. Double-click it. When User Account Control asks, click **Yes**. Administrator rights are needed to cut the network.
    - If you see "Windows protected your PC", click **More info** → **Run anyway**. This appears because the program is not digitally signed.
-3. In the control panel, click **安裝／更新並開始監控** (Install / update and start monitoring).
+3. In the control panel, click **Install / update and start monitoring**.
 
 The program copies itself to `C:\Program Files\RansomGuard` and starts in the background every time you sign in to Windows. A "RansomGuard" shortcut on the desktop opens the control panel.
 
@@ -44,22 +44,23 @@ Watched folders: Desktop, Documents, Pictures, Downloads, Videos, Music.
 3. If files are still being renamed or becoming unreadable one by one, hold the power button to force the computer off immediately.
 4. Take a photo of the ransom note with your phone, and use your phone to change the passwords of important accounts such as email and banking.
 
-**If it was a false alarm** (e.g. you touched a canary file yourself): open "RansomGuard" on the desktop and click **恢復網路並重新開啟監控** (Restore network and restart monitoring).
+**If it was a false alarm** (e.g. you touched a canary file yourself): open "RansomGuard" on the desktop and click **Restore network and restart monitoring**.
 
 ## Update
 
-Download the new `RansomGuard.exe` from [Releases](https://github.com/leo-code-del/RansomGuard/releases), run it and click **安裝／更新並開始監控** (Install / update and start monitoring). It replaces the old version. The current version number is shown in the top-left corner of the control panel.
+Download the new `RansomGuard.exe` from [Releases](https://github.com/leo-code-del/RansomGuard/releases), run it and click **Install / update and start monitoring**. It replaces the old version. The current version number is shown in the top-left corner of the control panel.
 
 ## Control panel
 
-| Button | English | What it does |
-| --- | --- | --- |
-| 安裝／更新並開始監控 | Install / update and start monitoring | Installs or updates background monitoring and starts it |
-| 恢復網路並重新開啟監控 | Restore network and restart monitoring | Restores the network after a false alarm |
-| 停止監控 | Stop monitoring | Stops it for now; it starts again at next sign-in |
-| 預覽警告畫面 | Preview warning | Shows what the warning looks like, without cutting the network |
-| 開啟紀錄檔 | Open log | Log file: `%LOCALAPPDATA%\RansomGuard\guard.log` |
-| 解除安裝 | Uninstall | Removes background monitoring, the desktop shortcut and the canary files |
+| Button | What it does |
+| --- | --- |
+| Install / update and start monitoring | Installs or updates background monitoring and starts it |
+| Restore network and restart monitoring | Restores the network after a false alarm |
+| Stop monitoring | Stops it for now; it starts again at next sign-in |
+| Preview warning | Shows what the warning looks like, without cutting the network |
+| Open log | Log file: `%LOCALAPPDATA%\RansomGuard\guard.log` |
+| Uninstall | Removes background monitoring, the desktop shortcut and the canary files |
+| 中文 / English (top right) | Switches the interface language |
 
 ## Command-line options
 
@@ -71,6 +72,7 @@ RansomGuard.exe --dry-run    Test mode: log and show alerts only, never cut the 
 RansomGuard.exe --test-alert Preview the full-screen warning
 RansomGuard.exe --watch D:\Data --watch E:\Backup   Watch custom folders
 RansomGuard.exe --version    Show the version
+RansomGuard.exe --lang en    Use English for this run (zh = Chinese)
 ```
 
 ## Run from source and build
@@ -96,12 +98,12 @@ The built file is `dist\RansomGuard.exe`.
 
 ### Publishing a new version
 
-1. Change `VERSION` in `ransom_guard.py`, e.g. to `"1.1.1"`.
+1. Change `VERSION` in `ransom_guard.py`, e.g. to `"1.2.1"`.
 2. Rebuild, commit and push.
 3. Create a release with the exe attached:
 
    ```
-   gh release create v1.1.1 dist\RansomGuard.exe --title "RansomGuard 1.1.1" --notes "What changed..."
+   gh release create v1.2.1 dist\RansomGuard.exe --title "RansomGuard 1.2.1" --notes "What changed..."
    ```
 
 The download button in the README always points to the latest version, so it never needs editing.
