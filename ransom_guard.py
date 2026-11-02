@@ -74,7 +74,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.7.1"  # bump this, add release-notes/v1.7.1.md and push the tag v1.7.1 to publish a release
+VERSION = "1.7.2"  # bump this, add release-notes/v1.7.2.md and push the tag v1.7.2 to publish a release
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"

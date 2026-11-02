@@ -12,4 +12,7 @@ rem paths are relative to --specpath build, hence ..\icon.ico
 "%PYTHON%" -m PyInstaller --noconfirm --onefile --windowed --uac-admin --name RansomGuard ^
   --icon ..\icon.ico --add-data "..\icon.ico;." ^
   --distpath dist --workpath build --specpath build ransom_guard.py
+if errorlevel 1 exit /b 1
+rem PyInstaller only warns when it can't pack the Tcl/Tk data, and the exe then doesn't start (v1.7.1)
+"%PYTHON%" check_build.py dist\RansomGuard.exe
 exit /b %errorlevel%

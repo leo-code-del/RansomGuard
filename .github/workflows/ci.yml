@@ -25,7 +25,9 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
-          python-version: "3.14"  # the version releases are built with
+          # exactly the version releases are built with: 3.14.9's Tcl/Tk 9 data can't be packed by PyInstaller
+          # 6.21, and the exe built with it (v1.7.1) didn't start. build.bat checks for that now.
+          python-version: "3.14.6"
           cache: pip
           cache-dependency-path: requirements*.txt
 
@@ -33,7 +35,7 @@ jobs:
         run: python -m pip install -r requirements-build.txt
 
       - name: Check for mistakes (pyflakes)
-        run: python -m pyflakes ransom_guard.py make_icon.py tests .github/scripts
+        run: python -m pyflakes ransom_guard.py make_icon.py check_build.py tests .github/scripts
 
       - name: Run the tests
         # temporary folders only; the suite itself forbids touching the network settings, the internet etc.

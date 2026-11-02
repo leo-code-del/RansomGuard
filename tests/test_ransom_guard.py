@@ -1132,6 +1132,19 @@ class PauseTests(TempDirTest):
         script = (Path(rg.__file__).parent / "build.bat").read_text(encoding="utf-8")
         self.assertIn(r"--icon ..\icon.ico", script)
         self.assertIn(r'--add-data "..\icon.ico;."', script)
+        self.assertIn("check_build.py", script)  # an exe without Tcl/Tk data doesn't start (v1.7.1)
+
+    def test_build_check_finds_a_missing_tcl_tk(self):
+        sys.path.insert(0, str(Path(rg.__file__).parent))
+        try:
+            import check_build
+        except ImportError:
+            self.skipTest("PyInstaller is not installed (pip install -r requirements-build.txt)")
+        good = ["icon.ico", "tk86t.dll", "tcl86t.dll", "_tcl_data/init.tcl", "_tk_data/tk.tcl", "base_library.zip"]
+        self.assertEqual(check_build.missing(good), [])
+        v171 = ["icon.ico", "tcl90.dll", "base_library.zip"]  # what the broken v1.7.1 contained
+        self.assertEqual(len(check_build.missing(v171)), 3)
+        self.assertEqual(check_build.missing([n for n in good if n != "icon.ico"]), ["icon (icon.ico)"])
 
     def test_real_writer_is_found_paused_and_resumed(self):
         # a harmless child that keeps overwriting the start of one file in a temp folder

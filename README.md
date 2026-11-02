@@ -161,7 +161,7 @@ build.bat
 
 `requirements.txt` lists what running from source needs; `requirements-build.txt` adds the exact PyInstaller version used for releases.
 
-`build.bat` packs `icon.ico` into the exe. Without it, the window, taskbar and desktop shortcut show PyInstaller's default icon. To use a Python that is not on PATH, set `PYTHON` first, e.g. `set PYTHON=C:\Python314\python.exe`.
+`build.bat` packs `icon.ico` into the exe. Without it, the window, taskbar and desktop shortcut show PyInstaller's default icon. It then runs `check_build.py`, which fails the build if the exe lacks the Tcl/Tk files the control panel needs: PyInstaller only warns about that, and such an exe doesn't start at all (that happened to v1.7.1, built with Python 3.14.9, whose Tcl/Tk 9 files PyInstaller 6.21 can't pack; releases use Python 3.14.6). To use a Python that is not on PATH, set `PYTHON` first, e.g. `set PYTHON=C:\Python314\python.exe`.
 
 Run the tests (Python's built-in `unittest`; `pytest` runs them too):
 

@@ -161,7 +161,7 @@ build.bat
 
 `requirements.txt` 列出從原始碼執行需要的套件；`requirements-build.txt` 再加上發布版本使用的固定 PyInstaller 版本。
 
-`build.bat` 會把 `icon.ico` 打包進 exe。少了它，視窗、工作列和桌面捷徑都會顯示 PyInstaller 的預設圖示。要用不在 PATH 裡的 Python，先設定 `PYTHON`，例如 `set PYTHON=C:\Python314\python.exe`。
+`build.bat` 會把 `icon.ico` 打包進 exe。少了它，視窗、工作列和桌面捷徑都會顯示 PyInstaller 的預設圖示。接著它會執行 `check_build.py`：如果 exe 裡缺少控制台需要的 Tcl/Tk 檔案，打包就算失敗。PyInstaller 對這種情況只會發出警告，但這樣的 exe 完全無法啟動（v1.7.1 就是這樣：它用 Python 3.14.9 打包，PyInstaller 6.21 無法打包它的 Tcl/Tk 9 檔案；發布版本固定使用 Python 3.14.6）。要用不在 PATH 裡的 Python，先設定 `PYTHON`，例如 `set PYTHON=C:\Python314\python.exe`。
 
 執行測試（使用 Python 內建的 `unittest`，也可以用 `pytest` 執行）：
 
