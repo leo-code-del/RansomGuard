@@ -1,0 +1,57 @@
+# Every push and pull request: check the code, run the tests and build RansomGuard.exe on Windows.
+# Actions are pinned to full commit SHAs (version in the comment), so a changed tag can't change this build.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.14"  # the version releases are built with
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install packages
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Check for mistakes (pyflakes)
+        run: python -m pyflakes ransom_guard.py make_icon.py tests .github/scripts
+
+      - name: Run the tests
+        # temporary folders only; the suite itself forbids touching the network settings, the internet etc.
+        run: python -m unittest discover -s tests -v
+
+      - name: Build RansomGuard.exe
+        shell: cmd
+        run: build.bat
+
+      - name: Check the build
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\RansomGuard.exe)) { throw "dist\RansomGuard.exe is missing (removed by antivirus?)" }
+          if (-not (Select-String -Path build\RansomGuard.spec -Pattern "icon.ico" -Quiet)) { throw "icon.ico was not packed" }
+          Get-FileHash dist\RansomGuard.exe -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: RansomGuard-${{ github.sha }}
+          path: dist/RansomGuard.exe
+          retention-days: 14
+          if-no-files-found: error

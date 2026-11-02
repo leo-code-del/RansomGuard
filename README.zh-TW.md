@@ -17,9 +17,34 @@
 1. 按上方按鈕下載 `RansomGuard.exe`（只支援 Windows 10 / 11）。
 2. 雙擊執行，出現「使用者帳戶控制」時按「是」（切斷網路需要系統管理員權限）。
    - 若出現「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」。這是因為程式沒有數位簽章。
-3. 在控制台按 **安裝／更新並開始監控**。
+3. 在控制台按 **安裝並開始監控**。
 
 安裝後程式會複製到 `C:\Program Files\RansomGuard`，每次登入 Windows 都會在背景自動啟動，桌面也會出現「RansomGuard」捷徑可以開啟控制台。
+
+### 驗證下載的檔案
+
+從 v1.7.1 起，每個 `RansomGuard.exe` 都由 [GitHub Actions](.github/workflows/release.yml) 依照標記的原始碼打包，而不是在任何人自己的電腦上打包；GitHub 也會為它簽署一份 *build provenance attestation*：記錄是哪個 repo、哪個 workflow、哪個 commit 產生了這個檔案。執行 exe 之前可以先驗證：
+
+1. 安裝 [GitHub CLI](https://cli.github.com/)，並執行一次 `gh auth login` 登入。
+2. 在下載檔案所在的資料夾執行：
+
+   ```
+   gh attestation verify RansomGuard.exe --repo leo-code-del/RansomGuard
+   ```
+
+   如果還要確認它來自發布用的 workflow（而不是 repo 裡其他的 workflow）：
+
+   ```
+   gh attestation verify RansomGuard.exe --repo leo-code-del/RansomGuard --signer-workflow leo-code-del/RansomGuard/.github/workflows/release.yml
+   ```
+
+3. 出現「Verification succeeded」代表這個檔案和 workflow 打包出來的完全一樣。如果驗證失敗，請不要執行這個檔案。
+
+發布的版本也是不可變更的：發布後檔案就不能被替換。要確認檔案就是某個版本附上的那一個，執行 `gh release verify-asset v1.7.1 RansomGuard.exe --repo leo-code-del/RansomGuard`（換成你下載的版本）。
+
+沒有 GitHub CLI 的話，可以比對[版本頁面](https://github.com/leo-code-del/RansomGuard/releases) Assets 底下顯示的 SHA-256 和 PowerShell 的 `Get-FileHash RansomGuard.exe`。
+
+1.7.1 以前的版本是在開發者自己的電腦上打包的，沒有 attestation。
 
 ### 如果被 Windows Defender 刪除
 
@@ -27,7 +52,7 @@ Defender 有時會把 RansomGuard.exe 判定為威脅（例如 `Trojan:Win32/Bea
 
 1. 先比對檔案的 SHA-256 和[版本頁面](https://github.com/leo-code-del/RansomGuard/releases) Assets 底下顯示的是否相同（PowerShell：`Get-FileHash RansomGuard.exe`），相同才繼續。
 2. Windows 安全性 → 病毒與威脅防護 → 保護歷程記錄 → 選擇該項目 → **還原**（或 **允許在裝置上**）。
-3. 再執行一次 RansomGuard.exe，按 **安裝／更新並開始監控**。
+3. 再執行一次 RansomGuard.exe，按 **安裝並開始監控**。
 4. 請到 <https://www.microsoft.com/wdsi/filesubmission> 回報誤判（選「Incorrectly detected」），Microsoft 確認後所有人都不會再被誤判。
 
 ## 偵測方式
@@ -57,31 +82,66 @@ Defender 有時會把 RansomGuard.exe 判定為威脅（例如 `Trojan:Win32/Bea
 
 **如果確認是誤判**（例如自己動到誘餌檔）：開啟桌面上的「RansomGuard」，按 **恢復網路並重新開啟監控**。被暫停的程式會先讓 Defender 再掃描一次，沒有問題就恢復執行。維持暫停的程式，重新開機後就會結束。
 
+## 它會對電腦做什麼
+
+這一段列出 RansomGuard 會對電腦做的所有事，方便你判斷要不要信任它。
+
+**權限。** 啟動 RansomGuard.exe 時會要求系統管理員權限（使用者帳戶控制）。背景監控透過每次登入都會啟動的排程工作，以系統管理員權限執行。防護狀態檢查則用一般使用者權限執行。
+
+**讀取的檔案。** 會讀取桌面、文件、圖片、下載、影片、音樂裡有變動的檔案。常見格式（Office 檔、PDF、圖片、影片、文字檔）只讀前 16 KB，用來判斷是不是像被加密過。OneDrive 還沒下載到電腦上的檔案不會讀。不會讀其他磁碟或網路磁碟。
+
+**建立或修改的檔案與設定。**
+
+| 位置 | 內容 |
+| --- | --- |
+| 文件、圖片 | 各 3 個誘餌檔（`!!!_canary_do_not_delete.docx` 等） |
+| `%LOCALAPPDATA%\RansomGuard\` | `guard.log`（最多 4 個、每個 1 MB）、`state.json`（切斷或暫停了什麼）、`settings.json`（語言） |
+| `C:\Program Files\RansomGuard\` | `RansomGuard.exe`、`icon.ico`、`health_check.js` |
+| 桌面 | 「RansomGuard」捷徑 |
+| 工作排程器 | 「RansomGuard」和「RansomGuard Health Check」兩個排程工作 |
+
+**會刪除什麼。** 絕對不會刪除你自己的檔案。只會刪除它自己建立的東西：誘餌檔（恢復網路和解除安裝時）、舊版留下的檔案；解除安裝時還會刪除桌面捷徑、兩個排程工作和整個 `C:\Program Files\RansomGuard` 資料夾。
+
+**程式與網路。**
+
+| 時機 | 動作 |
+| --- | --- |
+| 有程式執行危險指令（刪除還原點、關閉 Defender 等） | 結束那個程式，並暫停下達指令的程式（往上最多三層） |
+| 偵測到疑似勒索病毒 | 暫停寫入最多資料的程式（最多五個）、停用所有網路卡（失敗時改用防火牆封鎖所有連線、釋放 IP 位址並中斷 Wi-Fi）、顯示全螢幕警告 |
+| 警告畫面開著的時候 | 網路卡被重新啟用會再停用一次 |
+| 你恢復網路時 | 重新啟用網路卡、還原防火牆設定，並恢復 Defender 確認沒問題的程式 |
+| 你按警告畫面的「立即強制關機」 | 確認後強制關機 |
+
+**網路連線。** 只有 exe 版會連網，而且只連 GitHub：每 6 小時，以及開啟控制台時，向 `api.github.com` 查詢最新版本；你同意更新後才從 `github.com` 下載新版，安裝前會核對 SHA-256。不會傳送任何關於你或你的檔案的資訊。Python 版完全不連網。Microsoft Defender 的掃描在你的電腦上執行；Defender 本身是否連線到 Microsoft，取決於你的 Defender 設定。
+
 ## 更新
 
 有新版本時 RansomGuard 會主動通知：背景監控在登入 2 分鐘後檢查一次，之後每 6 小時檢查一次；開啟控制台時也會檢查。按 **是** 就會自動更新（同一個版本在每次登入期間只會詢問一次）。
 
-要手動更新，開啟桌面上的「RansomGuard」，按 **安裝／更新並開始監控**。程式會到 GitHub 檢查有沒有新版本，有的話自動下載、用 GitHub 公布的 SHA-256 確認檔案沒被竄改、安裝，再用新版本重新開啟控制台。沒有網路時則重新安裝目前的版本。控制台左上角會顯示目前的版本號。
+要手動更新，開啟桌面上的「RansomGuard」，按 **更新到最新版本**（控制台發現有新版時，按鈕會顯示 **更新到 v…** 並變成藍色）。程式會到 GitHub 檢查有沒有新版本，有的話自動下載、用 GitHub 公布的 SHA-256 確認檔案沒被竄改、安裝，再用新版本重新開啟控制台。沒有網路時則重新安裝目前的版本。控制台左上角會顯示目前的版本號。
 
-> 1.4.0 以前的版本還不會自動更新：請到 [Releases](https://github.com/leo-code-del/RansomGuard/releases) 下載新版 `RansomGuard.exe`，執行後按 **安裝／更新並開始監控**，之後就能用按鈕更新。
+**不一定要更新。** 詢問時按 **否**，就會繼續用目前的版本監控。**安裝並開始監控** 不會連到 GitHub：它安裝正在執行的這個版本，並用它開始監控。想更新時隨時都可以更新。
+
+> 1.4.0 以前的版本還不會自動更新：請到 [Releases](https://github.com/leo-code-del/RansomGuard/releases) 下載新版 `RansomGuard.exe`，執行後按 **安裝並開始監控**，之後就能用按鈕更新。
 
 ## 控制台功能
 
 | 按鈕 | 作用 |
 | --- | --- |
-| 安裝／更新並開始監控 | 從 GitHub 更新到最新版本、安裝背景監控並立即啟動 |
+| 安裝並開始監控 | 用正在執行的版本安裝背景監控並立即啟動，不連到 GitHub |
+| 更新到最新版本 | 從 GitHub 更新到最新版本、安裝並開始監控 |
 | 恢復網路並重新開啟監控 | 誤判後恢復網路 |
 | 停止監控 | 暫時停止，下次登入會自動再啟動 |
 | 預覽警告畫面 | 看看觸發時的警告長什麼樣子，不會斷網 |
 | 開啟紀錄檔 | 紀錄檔位置：`%LOCALAPPDATA%\RansomGuard\guard.log` |
-| 解除安裝 | 移除背景監控、桌面捷徑與誘餌檔 |
+| 解除安裝 | 移除背景監控、防護狀態檢查、桌面捷徑、誘餌檔與 `C:\Program Files\RansomGuard` 資料夾 |
 | English / 中文(繁體)（右上角） | 切換介面語言 |
 
 ## 命令列參數
 
 ```
 RansomGuard.exe              開啟控制台
-RansomGuard.exe --install    安裝／更新背景監控
+RansomGuard.exe --install    安裝背景監控（有新版會先更新）
 RansomGuard.exe --update     開啟控制台並更新到最新版本
 RansomGuard.exe --restore    恢復網路，並重新開啟背景監控
 RansomGuard.exe --dry-run    測試模式：只記錄與跳窗，不會真的斷網
@@ -94,18 +154,22 @@ RansomGuard.exe --lang en    這次用英文介面（zh＝中文(繁體)）
 ## 從原始碼執行與打包
 
 ```
-pip install watchdog pyinstaller
+pip install -r requirements-build.txt
 python ransom_guard.py --gui
 build.bat
 ```
 
+`requirements.txt` 列出從原始碼執行需要的套件；`requirements-build.txt` 再加上發布版本使用的固定 PyInstaller 版本。
+
 `build.bat` 會把 `icon.ico` 打包進 exe。少了它，視窗、工作列和桌面捷徑都會顯示 PyInstaller 的預設圖示。要用不在 PATH 裡的 Python，先設定 `PYTHON`，例如 `set PYTHON=C:\Python314\python.exe`。
 
-執行測試（只使用暫存資料夾，不會動到網路或已安裝的程式）：
+執行測試（使用 Python 內建的 `unittest`，也可以用 `pytest` 執行）：
 
 ```
 python -m unittest discover -s tests -v
 ```
+
+測試只使用暫存資料夾，不會動到你的檔案、網路設定、網際網路或已安裝的程式。整套測試都強制遵守這一點：使用者資料夾、程式資料夾和安裝資料夾都會被導向暫存的沙盒；測試如果沒有先換掉 PowerShell、`ipconfig` / `netsh` / 關機、網際網路或全螢幕警告就碰到它們，會直接失敗。測試只能暫停自己開出來的程序。
 
 圖標 `icon.ico` / `icon.png` 由 `make_icon.py` 產生（需要 `pip install pillow`），要改圖標就改這個檔案再執行一次。
 
@@ -121,22 +185,52 @@ python -m unittest discover -s tests -v
 
 ### 發布新版
 
-1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.4.3"`。
-2. 執行測試、用 `build.bat` 重新打包，提交並推送。
-3. 建立 Release 並附上 exe：
+發布版本由 GitHub Actions 打包和發布，不再手動上傳：
+
+1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.7.2"`，並在 `release-notes/v1.7.2.md` 寫好發布說明。
+2. 執行測試、提交並推送。每次 push 和 pull request，[CI workflow](.github/workflows/ci.yml) 都會執行檢查、測試和打包。
+3. 為這個 commit 加上 tag 並推送：
 
    ```
-   gh release create v1.4.3 dist\RansomGuard.exe --title "RansomGuard 1.4.3" --notes-file notes.md
+   git tag v1.7.2
+   git push origin v1.7.2
    ```
 
-4. 只提供最新版本下載：移除上一版附的 exe，並在它的說明最上方加上停止提供下載的提示（說明仍可閱讀）：
+4. [發布 workflow](.github/workflows/release.yml) 會確認 tag 和 `VERSION` 一致、執行測試、打包 exe、簽署 attestation、發布 Release（先建立草稿，讓 exe 在版本變成不可變更之前附上去），並在上一版的說明加上建議更新的提示。
 
-   ```
-   gh release delete-asset v1.4.2 RansomGuard.exe --yes
-   ```
+v1.7.1 起的 Release 是不可變更的：發布後檔案和 tag 都不能修改，所以出錯時只能發新的版本號，舊版的 exe 也會一直可以下載。README 的下載按鈕永遠指向最新版本，不需要修改。
 
-README 的下載按鈕永遠指向最新版本，不需要修改。
+## 開發方式
 
-## 注意
+RansomGuard 主要使用 Anthropic 的 AI 程式開發助理 [Claude Code](https://claude.com/claude-code) 開發。repo 擁有者負責審閱修改內容、決定每個版本要放進什麼，並在自己的電腦上試用新版本。每次修改都會經過 `tests/` 裡的自動測試。AI 輔助寫出的程式仍可能有錯，發現任何問題請到 [Issues](https://github.com/leo-code-del/RansomGuard/issues) 回報。
 
-RansomGuard 是額外的防線，不能取代防毒軟體與**離線備份**。重要檔案請定期備份到平常不接在電腦上的硬碟。
+## 已知限制與風險
+
+RansomGuard 是額外的一道防線，不是唯一的防護。請繼續使用防毒軟體（例如 Microsoft Defender）、安裝 Windows 更新，並定期把重要檔案備份到**平常不接在電腦上**的硬碟。一直接著的備份硬碟也可能一起被加密。
+
+**做不到的事**
+
+- 它不是防毒軟體，不認得惡意程式，只會對「看起來像在加密」的行為做出反應。
+- 只監控桌面、文件、圖片、下載、影片、音樂。其他磁碟、網路磁碟，以及不在這些資料夾裡的雲端資料夾都不受保護，除非用 `--watch` 加進來。
+- 反應之前會有一些檔案已經被加密：30 秒內約 8 到 10 個檔案看起來被加密才會觸發（或誘餌檔被動到），而且 Windows 回報檔案變動本身就有約 1 秒的延遲。
+- 加密速度慢到低於這些門檻的勒索病毒，只有碰到誘餌檔才會被抓到。保留檔名、又不動檔案開頭的勒索病毒也一樣。
+- 透過 Windows 程式介面刪除還原點、而不是執行 `vssadmin` 這類指令的勒索病毒，危險指令檢查抓不到。
+- 透過記憶體映射檔案寫入的程式不會出現在寫入量統計中，可能找不到它來暫停。
+- 已經取得系統管理員權限的勒索病毒可以停止 RansomGuard 或刪除它的排程工作。防護狀態檢查會在一天內提醒你。
+- 觸發之後，監控會停止，直到你恢復網路為止。
+- 只用自動測試和模擬的勒索病毒（由測試腳本加密並改名檔案）測試過，沒有用真正的勒索病毒測試過。
+- 只支援 Windows 10 和 11，而且需要系統管理員權限。
+
+**可能出錯的情況**
+
+- **誤判會切斷網路。** 例如你自己動到誘餌檔、有程式在 30 秒內把 10 個以上的檔案改成不常見的副檔名，或三個資料夾出現名稱像勒索訊息的檔案（例如 `how to recover files.txt`）。
+- **正當的系統維護會被中止。** 備份軟體或系統管理員執行 `wbadmin delete backup`、`vssadmin delete shadows` 或 `wevtutil cl` 時會被當成勒索病毒：指令會被結束，網路會被切斷。
+- **誤判時正常程式可能被暫停。** 編輯器、瀏覽器和 OneDrive 這類一直在寫檔的程式可能被暫停（畫面卡住），直到你從控制台恢復網路。如果改用 `restore_network.bat` 恢復，它們會一直暫停到重新開機。
+- **解除安裝會刪除整個 `C:\Program Files\RansomGuard` 資料夾**，包括你自己放進去的檔案。
+- 文件或圖片資料夾裡如果有你自己的檔案剛好和誘餌檔同名（例如 `!!!_canary_do_not_delete.docx`），會被誘餌檔取代。
+
+**已知的安全問題**（修好後會從這裡移除）
+
+- **從 Python 原始碼執行，可能讓惡意程式取得系統管理員權限。** `install_ransom_guard.bat` 和 `ransom_guard.py --install` 建立的排程工作，會以系統管理員權限執行原本資料夾裡的 `ransom_guard.py`。如果那個資料夾不需要系統管理員權限就能修改（例如 D: 上的資料夾或你的使用者資料夾），任何以你的身分執行的程式都可以改這支腳本，在你下次登入時取得系統管理員權限。exe 版沒有這個問題：它會把自己複製到只有系統管理員能修改的 `C:\Program Files\RansomGuard`。如果要從原始碼執行，請把專案放在只有系統管理員能修改的資料夾。
+- **使用者資料夾裡的設定會影響以系統管理員權限執行的動作。** `state.json` 放在 `%LOCALAPPDATA%\RansomGuard`，任何以你的身分執行的程式都能修改。恢復網路時，裡面記錄的防火牆設定會以系統管理員權限還原，所以惡意程式可以利用它在那一刻把防火牆關掉。它也可以讓防護狀態檢查不提示監控已停止。
+- **更新只對照 GitHub 檢查。** 用來核對更新的 SHA-256 同樣來自 GitHub，所以能防止下載損毀，但防不了 GitHub 帳號被入侵。程式內建的更新也不會檢查 attestation，不過你可以自己驗證（見[驗證下載的檔案](#驗證下載的檔案)）。exe 也沒有數位簽章，這也是 SmartScreen 和 Defender 有時不信任它的原因。

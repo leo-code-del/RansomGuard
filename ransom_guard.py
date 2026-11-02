@@ -45,7 +45,9 @@ Build a single executable: run build.bat (output dist\\RansomGuard.exe, with ico
 packed inside; without it the window, taskbar and shortcut show PyInstaller's default icon)
 
 Download and update: https://github.com/leo-code-del/RansomGuard/releases
-  Download the new RansomGuard.exe -> run it -> click "Install / update and start monitoring"
+  Download the new RansomGuard.exe -> run it -> click "Install and start monitoring"
+  (or click "Update to the latest version" in the control panel; "Install and start monitoring" alone
+  keeps the version that is running)
 """
 
 import argparse
@@ -72,7 +74,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.7.0"  # bump this for a new release and create the matching GitHub Release (v1.7.0)
+VERSION = "1.7.1"  # bump this, add release-notes/v1.7.1.md and push the tag v1.7.1 to publish a release
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -1737,8 +1739,8 @@ def restore_network(report=print) -> bool:
     if installed:
         report(tr("重新開啟監控...", "Restarting monitoring..."))
         report(tr("  監控已重新啟動", "  Monitoring restarted") if start_monitor() else
-               tr("  監控沒有正常啟動，請按「安裝／更新並開始監控」，或查看紀錄檔",
-                  "  Monitoring did not start. Click \"Install / update and start monitoring\" "
+               tr("  監控沒有正常啟動，請按「安裝並開始監控」，或查看紀錄檔",
+                  "  Monitoring did not start. Click \"Install and start monitoring\" "
                   "or check the log"))
     else:
         report(tr("尚未安裝背景監控（排程工作），所以沒有重新開啟監控。",
@@ -1928,14 +1930,15 @@ def spawn_installed(*args):
     return subprocess.Popen([str(INSTALL_EXE), *args], cwd=str(INSTALL_DIR), env=fresh_env())
 
 
-def install(report=print) -> bool:
-    """Update from GitHub if there is a newer release (otherwise copy this exe) into Program Files,
+def install(report=print, update=True) -> bool:
+    """Put this exe into Program Files (or, with update, the newer release from GitHub if there is one),
     create a scheduled task that runs elevated at sign-in and a desktop shortcut, then start monitoring.
+    update=False keeps the version that is running, for users who want to stay on it.
     If anything fails, the monitoring that was installed before is started again."""
     report(tr("停止舊的監控...", "Stopping the old monitor..."))
     stop_monitor()
     try:
-        return _install(report)
+        return _install(report, update)
     except Exception:
         if task_state():  # don't leave the computer unprotected
             report(tr("安裝沒有完成，重新啟動原本的監控...", "Install did not finish; restarting the previous monitoring..."))
@@ -2001,15 +2004,15 @@ if (problem) {
     var zh = lang == "zh";
     var msg = problem == "removed" ?
         (zh ? "RansomGuard 的背景防護已經從這台電腦上消失了，最常見的原因是被 Microsoft Defender 誤判刪除。\n\n" +
-              "要開啟下載頁面重新安裝嗎？\n（下載 RansomGuard.exe 後執行，按「安裝／更新並開始監控」）"
+              "要開啟下載頁面重新安裝嗎？\n（下載 RansomGuard.exe 後執行，按「安裝並開始監控」）"
             : "RansomGuard's background protection is gone from this computer. Most often Microsoft Defender " +
               "removed it by mistake.\n\nOpen the download page to install it again?\n(Download RansomGuard.exe, " +
-              "run it and click \"Install / update and start monitoring\".)") :
+              "run it and click \"Install and start monitoring\".)") :
         (zh ? "RansomGuard 的背景監控沒有在執行，這台電腦目前沒有勒索病毒防護。\n\n" +
-              "要開啟控制台嗎？（按「安裝／更新並開始監控」就會重新開始）"
+              "要開啟控制台嗎？（按「安裝並開始監控」就會重新開始）"
             : "RansomGuard's background monitoring is not running, so this computer has no ransomware " +
-              "protection right now.\n\nOpen the control panel? (Click \"Install / update and start " +
-              "monitoring\" to start it again.)");
+              "protection right now.\n\nOpen the control panel? (Click \"Install and start monitoring\" " +
+              "to start it again.)");
     // 4 = Yes/No, 48 = warning icon, 4096 = stays on top; 6 = Yes
     if (sh.Popup(msg, 0, "RansomGuard", 4 + 48 + 4096) == 6) {
         var lnk = sh.SpecialFolders("Desktop") + "\\RansomGuard.lnk";
@@ -2045,9 +2048,11 @@ def install_health_check(report):
         report(tr(f"  無法建立防護狀態檢查：{err}", f"  Could not create the health check: {err}"))
 
 
-def _install(report) -> bool:
+def _install(report, update=True) -> bool:
     global UPDATED_TO
-    UPDATED_TO = fetch_update(report) if FROZEN else None
+    UPDATED_TO = fetch_update(report) if FROZEN and update else None
+    if update and not FROZEN:
+        report(tr("從原始碼執行時，請用 git pull 更新程式碼。", "Running from source: update the code with git pull."))
     if FROZEN and UPDATED_TO is None and norm(sys.executable) != norm(INSTALL_EXE):
         # a program that runs as administrator must live in a folder only administrators can change
         report(tr(f"複製程式到 {INSTALL_DIR} ...", f"Copying the program to {INSTALL_DIR} ..."))
@@ -2180,7 +2185,7 @@ def status_info():
            "Ready": (tr("已停止", "Stopped"), "warn", unprotected),
            "Disabled": (tr("已停用", "Disabled"), "warn", unprotected),
            "": (tr("尚未安裝", "Not installed"), "off",
-                tr("按「安裝／更新並開始監控」", "Click \"Install / update and start monitoring\""))
+                tr("按「安裝並開始監控」", "Click \"Install and start monitoring\""))
            }.get(s, (s, "warn", ""))
     st = load_state()
     cut = tr("已切斷", "Cut off")
@@ -2311,7 +2316,13 @@ def gui(auto_update=False):
             detail.config(text=note or " ")
         cut = info[1][1] == "bad"  # highlight "Restore network" while the network is cut
         style(w["install"], "secondary" if cut else "primary")
+        style(w["update"], "primary" if w.get("new") and not cut else "secondary")
         style(w["restore"], "success" if cut else "secondary")
+
+    def update_label():
+        new = w.get("new")
+        return (tr(f"更新到 v{new}", f"Update to v{new}") if new else
+                tr("更新到最新版本", "Update to the latest version"))
 
     def write(msg, tag=None):
         out = w["out"]
@@ -2353,9 +2364,17 @@ def gui(auto_update=False):
                 elif kind == "status":
                     show_status(msg)
                 elif kind == "update":  # a newer version was found when the window opened
+                    if msg:  # the update button names it and turns blue, also if the user says "no" now
+                        w["new"] = msg
+                        w["update"].config(text=update_label())
+                        if not w.get("working"):
+                            style(w["update"], "primary")
                     if msg and not w.get("working") and messagebox.askyesno(
-                            "RansomGuard", tr(f"有新版本 v{msg}（目前是 v{VERSION}）。\n\n要現在更新嗎？",
-                                              f"Version {msg} is available (you have v{VERSION}).\n\nUpdate now?")):
+                            "RansomGuard", tr(f"有新版本 v{msg}（目前是 v{VERSION}）。\n\n要現在更新嗎？\n"
+                                              "選「否」會繼續用目前的版本監控，之後隨時可以按「更新到最新版本」。",
+                                              f"Version {msg} is available (you have v{VERSION}).\n\nUpdate now?\n"
+                                              "With \"No\" monitoring continues with this version; you can click "
+                                              "\"Update to the latest version\" any time.")):
                         run_bg(install)
                 else:
                     for b in buttons:
@@ -2566,10 +2585,14 @@ def gui(auto_update=False):
         acts = tk.Frame(body, bg=C["bg"])
         acts.pack(fill="x")
         acts.columnconfigure((0, 1), weight=1, uniform="btn")
-        rim, w["install"] = make_button(acts, tr("安裝／更新並開始監控", "Install / update and start monitoring"),
-                                        lambda: run_bg(install), "primary")
+        # install keeps the version that is running (for users who want to stay on it); update gets the newest
+        rim, w["install"] = make_button(acts, tr("安裝並開始監控", "Install and start monitoring"),
+                                        lambda: run_bg(lambda rep: install(rep, update=False)), "primary")
         w["install"].config(font=(FONT, 12, "bold"), pady=px(9))
-        rim.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(8)))
+        rim.grid(row=0, column=0, sticky="ew", pady=(0, px(8)), padx=(0, px(4)))
+        rim, w["update"] = make_button(acts, update_label(), lambda: run_bg(install), "secondary")
+        w["update"].config(font=(FONT, 12, "bold"), pady=px(9))
+        rim.grid(row=0, column=1, sticky="ew", pady=(0, px(8)), padx=(px(4), 0))
         for i, (text, cmd) in enumerate([
                 (tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore),
                 (tr("停止監控", "Stop monitoring"), on_stop),
@@ -2773,7 +2796,8 @@ def main():
     ap.add_argument("--restore", action="store_true",
                     help=tr("恢復網路，並重新開啟背景監控", "restore the network and restart background monitoring"))
     ap.add_argument("--install", action="store_true",
-                    help=tr("安裝／更新背景監控並開始監控", "install / update background monitoring and start it"))
+                    help=tr("安裝背景監控並開始監控（有新版會先更新）",
+                            "install background monitoring and start it (updating first if there is a newer release)"))
     ap.add_argument("--watch", action="append", metavar="DIR",
                     help=tr("自訂監控資料夾（可重複）", "watch a custom folder (can be repeated)"))
     ap.add_argument("--test-alert", action="store_true",

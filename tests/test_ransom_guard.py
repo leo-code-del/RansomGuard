@@ -3,9 +3,12 @@
     python -m unittest discover -s tests -v
 
 Everything happens in temporary folders; nothing touches the real Documents/Desktop, the real
-canary files, the network or the installed program. Strings that look like destructive commands
-only live in this file, never on a command line, so an installed RansomGuard won't react to them.
+canary files, the network or the installed program. setUpModule() enforces this: whatever a test
+doesn't replace itself fails loudly instead of reaching the real thing. Strings that look like
+destructive commands only live in this file, never on a command line, so an installed RansomGuard
+won't react to them.
 """
+import argparse
 import base64
 import hashlib
 import io
@@ -30,6 +33,72 @@ rg.log.addHandler(logging.NullHandler())
 rg.log.propagate = False
 rg.init_lang("en")
 
+REAL = {name: getattr(rg, name) for name in ("fullscreen_alert", "set_paused", "_known_folder")}
+SANDBOX = Path(tempfile.mkdtemp(prefix="rg_sandbox_"))
+TEST_PID = os.getpid()  # saved now: some tests replace os.getpid
+# the interpreter itself; in a venv, sys.executable is a small launcher that starts this as a child process
+BASE_PYTHON = getattr(sys, "_base_executable", None) or sys.executable
+_guards = []
+
+
+def forbidden(what):
+    def call(*args, **kwargs):
+        raise AssertionError(f"a test reached the real {what}; replace it in that test")
+    return call
+
+
+def sandbox_app_dir():
+    d = SANDBOX / "LocalAppData" / "RansomGuard"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def own_descendant(pid):
+    """True if pid is a child, grandchild... of this test process."""
+    parents = {p: parent for p, parent, _ in rg.process_list()}
+    for _ in range(10):
+        pid = parents.get(pid)
+        if pid is None:
+            return False
+        if pid == TEST_PID:
+            return True
+    return False
+
+
+def guarded_set_paused(pid, paused):
+    if not own_descendant(pid):
+        raise AssertionError(f"a test tried to pause or resume PID {pid}, which it didn't start")
+    return REAL["set_paused"](pid, paused)
+
+
+def setUpModule():
+    """Safety net for the whole suite: user folders, the app folder and the install folder point into a
+    temporary sandbox, and everything that would change the real computer is forbidden: PowerShell
+    (network adapters, firewall, scheduled tasks), ipconfig / netsh / shutdown, the internet, the
+    full-screen warning and pausing any process the tests didn't start. (The installed exe can't be
+    started either: INSTALL_EXE points into the sandbox.) A message box would wait for a click, so
+    alert() does nothing. Tests replace these as they need."""
+    for name, value in (
+            ("app_dir", sandbox_app_dir),
+            ("_known_folder", lambda name: SANDBOX / "User" / name),
+            ("INSTALL_DIR", SANDBOX / "Program Files" / "RansomGuard"),
+            ("INSTALL_EXE", SANDBOX / "Program Files" / "RansomGuard" / "RansomGuard.exe"),
+            ("_ps", forbidden("PowerShell (network adapters, firewall, scheduled tasks)")),
+            ("_run", forbidden("system commands (ipconfig, netsh, shutdown)")),
+            ("fullscreen_alert", forbidden("full-screen warning")),
+            ("set_paused", guarded_set_paused),
+            ("alert", lambda title, msg: None)):
+        _guards.append(mock.patch.object(rg, name, value))
+    _guards.append(mock.patch.object(urllib.request, "urlopen", forbidden("internet")))
+    for g in _guards:
+        g.start()
+
+
+def tearDownModule():
+    for g in reversed(_guards):
+        g.stop()
+    shutil.rmtree(SANDBOX, ignore_errors=True)
+
 ZIP_HEAD = b"PK\x03\x04\x14\x00\x06\x00"
 OLE_HEAD = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
@@ -41,9 +110,9 @@ def random_bytes(n=8192):
 class TempDirTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp(prefix="rg_test_"))
-
-    def tearDown(self):
-        shutil.rmtree(self.dir, ignore_errors=True)
+        # a cleanup, not tearDown: cleanups run last-registered first, so the folder is removed after the
+        # processes a test started (and registered for cleanup later) have been ended and no longer lock files
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
 
     def file(self, name, data):
         p = self.dir / name
@@ -699,7 +768,7 @@ class UpdateTests(TempDirTest):
     def test_failed_install_restarts_the_previous_monitor(self):
         started = []
 
-        def broken(report):
+        def broken(report, update=True):
             raise FileNotFoundError("base_library.zip")
         with mock.patch.object(rg, "stop_monitor", lambda: None), mock.patch.object(rg, "_install", broken), \
                 mock.patch.object(rg, "task_state", lambda: "Ready"), \
@@ -1028,12 +1097,13 @@ class PauseTests(TempDirTest):
         self.assertEqual(rg._early_paused, [])
 
     def test_real_chain_of_parents_is_paused(self):
-        # this test -> A -> B, all harmless Python processes; B's parent chain is paused up to this test
+        # this test -> A -> B, all harmless Python processes; B's parent chain is paused up to this test.
+        # BASE_PYTHON, not a venv's launcher, which would add a process to each level
         code_b = "import time; time.sleep(60)"
         code_a = ("import subprocess, sys, time\n"
                   f"b = subprocess.Popen([sys.executable, '-c', {code_b!r}])\n"
                   "print(b.pid, flush=True)\ntime.sleep(60)\n")
-        a = subprocess.Popen([sys.executable, "-c", code_a], stdout=subprocess.PIPE)
+        a = subprocess.Popen([BASE_PYTHON, "-c", code_a], stdout=subprocess.PIPE)
         b_pid = int(a.stdout.readline())
         self.addCleanup(a.stdout.close)
         self.addCleanup(a.wait)
@@ -1047,7 +1117,8 @@ class PauseTests(TempDirTest):
             self.assertTrue(rg.set_paused(p["pid"], False))
 
     def test_process_path_of_this_process(self):
-        self.assertEqual(rg.norm(rg.process_path(os.getpid())), rg.norm(sys.executable))
+        # in a venv, sys.executable is a launcher that starts the real interpreter: this process is the latter
+        self.assertEqual(rg.norm(rg.process_path(os.getpid())), rg.norm(BASE_PYTHON))
         self.assertEqual(rg.process_path(0x7FFFFFF0), "")  # no such process
 
     def test_warning_does_not_flash(self):
@@ -1145,7 +1216,10 @@ class DownloadScanTests(TempDirTest):
 
     @unittest.skipUnless(rg.MPCMDRUN.is_file(), "Microsoft Defender is not installed")
     def test_real_defender_scan(self):
-        self.assertEqual(rg.defender_scan(self.file("clean.txt", b"just text")), 0)
+        rc = rg.defender_scan(self.file("clean.txt", b"just text"))
+        if rc is None:
+            self.skipTest("Microsoft Defender is installed but not running (e.g. on a CI machine)")
+        self.assertEqual(rc, 0)
         self.assertIsNone(rg.defender_scan(str(self.dir / "missing.exe")))
 
     def test_handler_reports_new_and_renamed_files(self):
@@ -1155,6 +1229,306 @@ class DownloadScanTests(TempDirTest):
         h.on_any_event(FileMovedEvent(str(self.dl / "b.exe.crdownload"), str(self.dl / "b.exe")))
         h.on_any_event(FileModifiedEvent(str(self.dl / "c.exe")))
         self.assertEqual(seen, [str(self.dl / "a.exe"), str(self.dl / "b.exe")])
+
+
+# ---------------------------------------------------------------- the monitor loop (run)
+class StubProcessMonitor:
+    instances = []
+
+    def __init__(self, on_hit, kill):
+        self.on_hit, self.kill, self.starts, self.stopped, self.dead = on_hit, kill, 0, False, False
+        StubProcessMonitor.instances.append(self)
+
+    def start(self):
+        self.starts += 1
+        self.dead = False
+
+    def alive(self):
+        return not self.dead
+
+    def stop(self):
+        self.stopped = True
+
+
+class MonitorLoopTests(TempDirTest):
+    def setUp(self):
+        super().setUp()
+        self.watch = self.dir / "watch"
+        self.watch.mkdir()
+        self.triggered = []
+        StubProcessMonitor.instances = []
+        for name, value in (("app_dir", lambda: self.dir), ("IS_WINDOWS", True), ("FROZEN", False),
+                            ("is_admin", lambda: True), ("single_instance", lambda: True),
+                            ("exit_with_launcher", lambda: None), ("cleanup_old_files", lambda: None),
+                            ("ProcessMonitor", StubProcessMonitor), ("DEFENDER_SCAN_DOWNLOADS", False),
+                            ("CHECK_INTERVAL", 0),
+                            ("respond", lambda reason, dry_run: self.triggered.append((reason, dry_run)))):
+            p = mock.patch.object(rg, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def start(self):
+        t = threading.Thread(target=rg.run, args=(argparse.Namespace(watch=[str(self.watch)], dry_run=False),),
+                             daemon=True)
+        t.start()
+        time.sleep(1.5)  # canary files planted, file monitor running
+        return t
+
+    def wait_for(self, cond, timeout=10):
+        end = time.time() + timeout
+        while time.time() < end and not cond():
+            time.sleep(0.1)
+
+    def test_a_trigger_responds_once_and_ends_monitoring(self):
+        t = self.start()
+        canary = self.watch / rg.CANARY_NAMES[0]
+        self.assertEqual(canary.read_bytes(), rg.canary_bytes(canary))
+        canary.write_bytes(b"encrypted")
+        t.join(15)
+        self.assertFalse(t.is_alive(), "monitoring ends after a trigger, until the network is restored")
+        self.assertEqual(len(self.triggered), 1)
+        self.assertIn("Canary file", self.triggered[0][0])
+        pm = StubProcessMonitor.instances[0]
+        self.assertTrue(pm.kill)
+        self.assertTrue(pm.stopped)
+
+    def test_a_stopped_process_monitor_is_restarted(self):
+        t = self.start()
+        pm = StubProcessMonitor.instances[0]
+        pm.dead = True
+        self.wait_for(lambda: pm.starts >= 2)
+        self.assertEqual(pm.starts, 2)
+        (self.watch / rg.CANARY_NAMES[1]).unlink()  # end the monitor
+        t.join(15)
+        self.assertFalse(t.is_alive())
+
+    def test_no_start_without_administrator_rights_or_when_already_running(self):
+        args = argparse.Namespace(watch=[str(self.watch)], dry_run=False)
+        with mock.patch.object(rg, "is_admin", lambda: False), self.assertRaises(SystemExit) as e:
+            rg.run(args)
+        self.assertEqual(e.exception.code, 1)
+        with mock.patch.object(rg, "single_instance", lambda: False), self.assertRaises(SystemExit) as e:
+            rg.run(args)
+        self.assertEqual(e.exception.code, 0)
+        self.assertFalse(list(self.watch.iterdir()), "no canary files planted")
+
+    def test_periodic_check_finds_what_events_missed(self):
+        canaries = rg.plant_canaries([self.watch])
+        fired = []
+        handler = mock.Mock(triggered_at=None, fire=fired.append)
+        rg.periodic_check(handler, canaries)
+        self.assertEqual(fired, [])
+        canaries[0].unlink()
+        rg.periodic_check(handler, canaries)
+        self.assertIn("found by periodic check", fired[0])
+        handler.triggered_at = time.time()  # already triggered: nothing more
+        rg.periodic_check(handler, canaries)
+        self.assertEqual(len(fired), 1)
+
+    def test_canary_check_ignores_a_vanished_folder_and_locked_files(self):
+        canaries = rg.plant_canaries([self.watch])
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError("locked by antivirus")):
+            self.assertIsNone(rg.check_canaries(canaries))
+        gone = [self.dir / "unlinked OneDrive" / rg.CANARY_NAMES[0]]
+        self.assertIsNone(rg.check_canaries(gone))
+
+
+# ---------------------------------------------------------------- command line
+class CommandLineTests(unittest.TestCase):
+    def main(self, *argv, frozen=False, admin=True, install=True):
+        calls = []
+
+        def fake_install(report):
+            calls.append("install")
+            if isinstance(install, Exception):
+                raise install
+            return install
+        with mock.patch.object(rg.sys, "argv", ["RansomGuard", *argv]), mock.patch.object(rg, "FROZEN", frozen), \
+                mock.patch.object(rg, "restart_if_borrowed_files", lambda: False), \
+                mock.patch.object(rg, "fix_console_encoding", lambda: None), \
+                mock.patch.object(rg, "setup_logging", lambda: None), mock.patch.object(rg, "is_admin", lambda: admin), \
+                mock.patch.object(rg, "gui", lambda auto_update=False: calls.append(("gui", auto_update))), \
+                mock.patch.object(rg, "run", lambda args: calls.append(("run", args.dry_run))), \
+                mock.patch.object(rg, "install", fake_install), \
+                mock.patch.object(rg, "restore_network", lambda report: calls.append("restore")), \
+                mock.patch.object(rg, "fullscreen_alert",
+                                  lambda reason, status, wait=False: calls.append(("warning", status, wait))):
+            try:
+                rg.main()
+            except SystemExit as e:
+                calls.append(("exit", e.code))
+        return calls
+
+    def test_each_option_starts_the_right_mode(self):
+        self.assertEqual(self.main(), [("run", False)])                    # ransom_guard.py
+        self.assertEqual(self.main(frozen=True), [("gui", False)])         # double-clicked exe
+        self.assertEqual(self.main("--monitor", frozen=True), [("run", False)])  # the scheduled task
+        self.assertEqual(self.main("--dry-run", frozen=True), [("run", True)])
+        self.assertEqual(self.main("--gui"), [("gui", False)])
+        self.assertEqual(self.main("--update", frozen=True), [("gui", True)])
+        self.assertEqual(self.main("--restore"), ["restore"])
+        self.assertEqual(self.main("--test-alert"), [("warning", "test", True)])
+
+    def test_install_needs_administrator_rights_and_reports_failure(self):
+        self.assertEqual(self.main("--install"), ["install", ("exit", 0)])
+        self.assertEqual(self.main("--install", admin=False), [("exit", 1)])
+        self.assertEqual(self.main("--install", install=False), ["install", ("exit", 1)])
+        self.assertEqual(self.main("--install", install=OSError("disk full")), ["install", ("exit", 1)])
+
+    def test_language_option(self):
+        self.addCleanup(rg.init_lang, "en")
+        self.main("--lang", "zh", "--restore")
+        self.assertEqual(rg.LANG, "zh")
+
+
+# ---------------------------------------------------------------- the full-screen warning's content
+class WarningTests(unittest.TestCase):
+    def show(self, reason, status, paused=(), exit_code=None):
+        """Call the real fullscreen_alert() with PowerShell replaced; returns (process, shown info, args, alerts)."""
+        seen, alerts = {}, []
+
+        class FakeProc:
+            def __init__(self, args, **kw):
+                seen["args"], seen["env"] = args, kw["env"]
+                self.stderr = io.BytesIO(b"window failed")
+
+            def wait(self, timeout=None):
+                if exit_code is None:  # still open = the warning is showing
+                    raise subprocess.TimeoutExpired("powershell", timeout)
+                return exit_code
+        with mock.patch.object(rg, "fullscreen_alert", REAL["fullscreen_alert"]), \
+                mock.patch.object(rg.subprocess, "Popen", FakeProc), mock.patch.object(rg, "IS_WINDOWS", True), \
+                mock.patch.object(rg, "alert", lambda title, msg: alerts.append(msg)):
+            proc = rg.fullscreen_alert(reason, status, paused=paused)
+        info = json.loads(base64.b64decode(seen["env"]["RG_ALERT_INFO"]).decode("utf-8"))
+        return proc, info, seen["args"], alerts
+
+    def test_warning_names_the_reason_and_the_paused_programs(self):
+        evil = {"pid": 7, "name": "evil.exe", "path": r"C:\x\evil.exe", "paused": True, "result": "paused"}
+        proc, info, _, alerts = self.show("Canary file was modified", "cut", [evil])
+        self.assertIsNotNone(proc)
+        self.assertEqual(info["status"], "cut")
+        self.assertEqual(info["t"]["net"], "The network has been cut off automatically")
+        self.assertIn("Reason: Canary file was modified", info["t"]["detail"])
+        self.assertIn("Suspicious programs: evil.exe (PID 7, paused)", info["t"]["detail"])
+        self.assertEqual(alerts, [])
+
+    def test_reason_stays_off_the_command_line_and_is_shortened(self):
+        # a reason can quote a destructive command, and Defender blocks command lines containing one
+        marker = "rgtest-" + os.urandom(4).hex()
+        _, info, args, _ = self.show(marker + "x" * 300, "partial")
+        self.assertNotIn(marker, " ".join(args))
+        self.assertIn(marker, info["t"]["detail"])
+        self.assertIn("x" * 140 + "...", info["t"]["detail"])
+        self.assertNotIn("x" * 160, info["t"]["detail"])
+        self.assertIn("may not be fully cut off", info["t"]["net"])
+
+    def test_test_mode_says_so(self):
+        _, info, _, _ = self.show("preview", "test")
+        self.assertIn("Test mode", info["t"]["net"])
+        self.assertIn("This is a test", info["t"]["hint"])
+
+    def test_a_window_that_fails_falls_back_to_a_message_box(self):
+        proc, _, _, alerts = self.show("Canary file was modified", "cut", exit_code=3)
+        self.assertIsNone(proc)
+        self.assertIn("Canary file was modified", alerts[0])
+
+
+# ---------------------------------------------------------------- control panel status, keeping offline, scanning
+class StatusAndOfflineTests(TempDirTest):
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(rg, "app_dir", lambda: self.dir)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_status_cards(self):
+        def cards(task, state):
+            rg.save_state(state)
+            with mock.patch.object(rg, "task_state", lambda: task):
+                (_, mon, _), (_, net, _) = rg.status_info()
+            return mon, net
+        self.assertEqual(cards("Running", {}), ("ok", "ok"))
+        self.assertEqual(cards("Ready", {}), ("warn", "ok"))
+        self.assertEqual(cards("", {}), ("off", "ok"))
+        self.assertEqual(cards("Running", {"triggered_at": "2026-11-02 10:00:00"}), ("ok", "bad"))
+        self.assertEqual(cards("Ready", {"firewall": [{"Name": "Domain"}]}), ("warn", "bad"))
+
+    def test_network_turned_back_on_is_cut_again_while_the_warning_is_open(self):
+        polls = iter([None, None, None, 0, 0])  # the warning closes after two checks
+        cut = []
+        with mock.patch.object(rg.time, "sleep"), mock.patch.object(rg, "adapters_up", lambda: "1"), \
+                mock.patch.object(rg, "disconnect_network", lambda: cut.append(1)):
+            rg.keep_offline(mock.Mock(poll=lambda: next(polls)))
+        self.assertEqual(cut, [1])
+
+    def test_download_scanner_worker_keeps_going_after_an_error(self):
+        with mock.patch.object(rg, "_known_folder", lambda name: self.dir / name):
+            s = rg.DownloadScanner(lambda path: None)
+        seen, done = [], threading.Event()
+
+        def scan(path):
+            seen.append(Path(path).name)
+            if len(seen) == 1:
+                raise OSError("scan failed")
+            done.set()
+        s.scan = scan
+        s.start()
+        s.add(self.dir / "Downloads" / "a.exe")
+        s.add(self.dir / "Downloads" / "b.exe")
+        done.wait(5)
+        self.assertEqual(seen, ["a.exe", "b.exe"])
+
+
+# ---------------------------------------------------------------- installing the exe
+class InstallTests(TempDirTest):
+    def install(self, register_rc=0, update=True):
+        exe = self.dir / "Downloads" / "RansomGuard.exe"
+        exe.parent.mkdir(exist_ok=True)
+        exe.write_bytes(b"MZ the version being installed")
+        cmds, msgs = [], []
+
+        def ps(cmd):
+            cmds.append(cmd)
+            return (register_rc, "", "access denied") if "-TaskName 'RansomGuard' " in cmd else (0, "", "")
+        install_dir = self.dir / "Program Files" / "RansomGuard"
+        self.checked_github = []
+        with mock.patch.object(rg, "FROZEN", True), mock.patch.object(rg.sys, "executable", str(exe)), \
+                mock.patch.object(rg, "INSTALL_DIR", install_dir), \
+                mock.patch.object(rg, "INSTALL_EXE", install_dir / "RansomGuard.exe"), \
+                mock.patch.object(rg, "fetch_update", lambda report: self.checked_github.append(1)), \
+                mock.patch.object(rg, "_ps", ps), \
+                mock.patch.object(rg, "_run", lambda args: None), mock.patch.object(rg, "start_monitor", lambda: True), \
+                mock.patch.object(rg, "desktop_lnk", lambda: self.dir / "Desktop" / "RansomGuard.lnk"):
+            ok = rg._install(msgs.append, update)
+        return ok, install_dir, cmds
+
+    def test_install_without_update_keeps_the_running_version(self):
+        # for users who want to stay on the version they have: GitHub is not even asked
+        ok, install_dir, _ = self.install(update=False)
+        self.assertTrue(ok)
+        self.assertEqual(self.checked_github, [])
+        self.assertEqual((install_dir / "RansomGuard.exe").read_bytes(), b"MZ the version being installed")
+        self.install()  # the update button does ask
+        self.assertEqual(self.checked_github, [1])
+
+    def test_install_copies_the_exe_and_creates_tasks_and_shortcut(self):
+        ok, install_dir, cmds = self.install()
+        self.assertTrue(ok)
+        self.assertEqual((install_dir / "RansomGuard.exe").read_bytes(), b"MZ the version being installed")
+        self.assertTrue((install_dir / "icon.ico").exists())
+        self.assertTrue((install_dir / "health_check.js").exists())
+        task = next(c for c in cmds if "-TaskName 'RansomGuard' " in c)
+        self.assertIn(str(install_dir / "RansomGuard.exe"), task)
+        self.assertIn("--monitor", task)
+        self.assertIn("RunLevel Highest", task)
+        self.assertTrue(any(rg.HEALTH_TASK in c for c in cmds))
+        shortcut = next(c for c in cmds if "CreateShortcut" in c)
+        self.assertIn(str(install_dir / "icon.ico"), shortcut)
+
+    def test_a_failed_task_registration_stops_the_install(self):
+        with self.assertRaises(RuntimeError):
+            self.install(register_rc=1)
 
 
 if __name__ == "__main__":

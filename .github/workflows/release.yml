@@ -1,0 +1,86 @@
+# Pushing a tag such as v1.7.1 builds RansomGuard.exe on GitHub's servers, signs a build provenance
+# attestation for it (verify with: gh attestation verify RansomGuard.exe --repo leo-code-del/RansomGuard)
+# and publishes the GitHub Release. Release notes come from release-notes/<tag>.md.
+# Releases are immutable once published, so the exe goes into a draft first and the draft is published last.
+# Actions are pinned to full commit SHAs (version in the comment); no cache is used for release builds.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write      # create the release
+      id-token: write      # sign the attestation
+      attestations: write  # store the attestation
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install packages
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Check the tag matches VERSION in ransom_guard.py
+        shell: pwsh
+        run: |
+          $version = python -c "import re; print(re.search(r'^VERSION = \x22(.+?)\x22', open('ransom_guard.py', encoding='utf-8').read(), re.M).group(1))"
+          if ("v$version" -ne $env:TAG) { throw "Tag $env:TAG doesn't match VERSION = `"$version`" in ransom_guard.py" }
+          if (-not (Test-Path "release-notes/$env:TAG.md")) { throw "release-notes/$env:TAG.md is missing" }
+
+      - name: Check for mistakes (pyflakes)
+        run: python -m pyflakes ransom_guard.py make_icon.py tests .github/scripts
+
+      - name: Run the tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build RansomGuard.exe
+        shell: cmd
+        run: build.bat
+
+      - name: Check the build
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\RansomGuard.exe)) { throw "dist\RansomGuard.exe is missing (removed by antivirus?)" }
+          if (-not (Select-String -Path build\RansomGuard.spec -Pattern "icon.ico" -Quiet)) { throw "icon.ico was not packed" }
+          Get-FileHash dist\RansomGuard.exe -Algorithm SHA256 | Format-List
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: dist/RansomGuard.exe
+
+      - name: Publish the release (draft first, then published)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $title = "RansomGuard $($env:TAG.TrimStart('v'))"
+          gh release create $env:TAG dist/RansomGuard.exe --draft --verify-tag --title $title --notes-file "release-notes/$env:TAG.md"
+          if ($LASTEXITCODE) { throw "creating the draft release failed" }
+          gh release edit $env:TAG --draft=false --latest
+          if ($LASTEXITCODE) { throw "publishing the release failed" }
+
+      - name: Recommend the new version in the previous release's notes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/recommend_latest.py $env:TAG
