@@ -198,7 +198,7 @@ Releases are built and published by GitHub Actions, never uploaded by hand:
 
 4. The [release workflow](.github/workflows/release.yml) checks that the tag matches `VERSION`, runs the tests, builds the exe, signs its attestation, publishes the release (as a draft first, so the exe is attached before the release becomes immutable) and adds a "please update" notice to the previous release's notes.
 
-Releases are immutable since v1.7.1: once published, their files and tags can't be changed, so a mistake means a new version number, and older versions' exe stays downloadable. The download button in the README always points to the latest version, so it never needs editing.
+Releases from v1.7.0 on are immutable: once published, their files and tags can't be changed, so a mistake means a new version number, and their exe stays downloadable. The download button in the README always points to the latest version, so it never needs editing.
 
 ## How it is developed
 
