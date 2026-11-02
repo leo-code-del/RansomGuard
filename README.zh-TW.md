@@ -96,9 +96,10 @@ RansomGuard.exe --lang en    這次用英文介面（zh＝中文(繁體)）
 ```
 pip install watchdog pyinstaller
 python ransom_guard.py --gui
-python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon ..\icon.ico ^
-       --add-data "..\icon.ico;." --distpath dist --workpath build --specpath build ransom_guard.py
+build.bat
 ```
+
+`build.bat` 會把 `icon.ico` 打包進 exe。少了它，視窗、工作列和桌面捷徑都會顯示 PyInstaller 的預設圖示。要用不在 PATH 裡的 Python，先設定 `PYTHON`，例如 `set PYTHON=C:\Python314\python.exe`。
 
 執行測試（只使用暫存資料夾，不會動到網路或已安裝的程式）：
 
@@ -121,7 +122,7 @@ python -m unittest discover -s tests -v
 ### 發布新版
 
 1. 修改 `ransom_guard.py` 裡的 `VERSION`，例如 `"1.4.3"`。
-2. 執行測試、重新打包，提交並推送。
+2. 執行測試、用 `build.bat` 重新打包，提交並推送。
 3. 建立 Release 並附上 exe：
 
    ```

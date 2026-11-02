@@ -28,6 +28,12 @@ try {
     if ($st -and $st.triggered_at) {
         Write-Host "RansomGuard cut off the network at $($st.triggered_at)." -ForegroundColor Yellow
     }
+    if ($st -and $st.paused) {
+        $list = (@($st.paused) | ForEach-Object { "$($_.name) (PID $($_.pid))" }) -join ', '
+        Write-Host "RansomGuard paused these programs when it triggered: $list" -ForegroundColor Yellow
+        Write-Host 'This script does not resume them; restarting the computer ends them. The control panel''s'
+        Write-Host '"Restore network and restart monitoring" button resumes the ones Microsoft Defender finds clean.'
+    }
     Write-Host 'First make sure this was a test or a false alarm, not a real ransomware infection.'
     $ans = Read-Host 'Restore the network? (Y/N)'
     if ($ans -notmatch '^[Yy]') { Write-Host 'Cancelled. The network stays cut off.'; Done 0 }

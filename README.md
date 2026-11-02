@@ -96,9 +96,10 @@ RansomGuard.exe --lang en    Use English for this run (zh = 中文(繁體))
 ```
 pip install watchdog pyinstaller
 python ransom_guard.py --gui
-python -m PyInstaller --onefile --windowed --uac-admin --name RansomGuard --icon ..\icon.ico ^
-       --add-data "..\icon.ico;." --distpath dist --workpath build --specpath build ransom_guard.py
+build.bat
 ```
+
+`build.bat` packs `icon.ico` into the exe. Without it, the window, taskbar and desktop shortcut show PyInstaller's default icon. To use a Python that is not on PATH, set `PYTHON` first, e.g. `set PYTHON=C:\Python314\python.exe`.
 
 Run the tests (they only use temporary folders and never touch the network or the installed program):
 
@@ -121,7 +122,7 @@ The built file is `dist\RansomGuard.exe`.
 ### Publishing a new version
 
 1. Change `VERSION` in `ransom_guard.py`, e.g. to `"1.4.3"`.
-2. Run the tests, rebuild, commit and push.
+2. Run the tests, rebuild with `build.bat`, commit and push.
 3. Create a release with the exe attached:
 
    ```

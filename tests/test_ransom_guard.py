@@ -289,6 +289,21 @@ class HandlerTests(TempDirTest):
             self.h.on_any_event(FileModifiedEvent(self.file("new.docx", random_bytes())))
         self.assertEqual(self.fired, [])
 
+    def test_repeated_events_for_an_unchanged_file_read_it_once(self):
+        p = self.file("notes.txt", b"plain text\n" * 1000)
+        reads = []
+        real = rg.broken_reason
+        with mock.patch.object(rg, "broken_reason", lambda path, st=None: reads.append(path) or real(path, st)):
+            for _ in range(3):  # Windows usually reports a save two or three times
+                self.h.on_any_event(FileModifiedEvent(p))
+            self.assertEqual(len(reads), 1)
+            Path(p).write_bytes(random_bytes())  # really changed: checked again right away
+            self.h.on_any_event(FileModifiedEvent(p))
+            self.assertEqual(len(reads), 2)
+            with mock.patch.object(rg, "RECHECK_SEC", 0):  # and an unchanged file is read again later
+                self.h.on_any_event(FileModifiedEvent(p))
+            self.assertEqual(len(reads), 3)
+
     def test_temp_and_office_lock_files_ignored(self):
         for i in range(20):
             self.h.on_any_event(FileModifiedEvent(self.file(f"~$doc{i}.docx", random_bytes())))
@@ -538,6 +553,7 @@ class NetworkTests(TempDirTest):
     def test_partial_restore_keeps_state(self):
         net = self.use(FakeNetwork(enable_fails=("Wi-Fi",)))
         rg.disconnect_network()
+        self.assertEqual(net.disabled, {"Ethernet", "Wi-Fi"})
         msgs = []
         self.assertFalse(rg.restore_network(msgs.append))
         self.assertTrue(rg.network_cut(rg.load_state()), "state must stay so the user can retry")
@@ -880,6 +896,20 @@ class PauseTests(TempDirTest):
         self.assertEqual(asked, [[r"C:\x\evil.exe"]])
         self.assertEqual(alerts, [("cut", [evil])])
 
+    def test_trigger_cuts_the_network_even_if_the_state_cannot_be_saved(self):
+        cut = []
+        self.patch("app_dir", lambda: self.dir)
+        self.patch("IS_WINDOWS", True)
+        self.patch("pause_writers", lambda dry_run: [{"pid": 7, "name": "e.exe", "path": "", "paused": True,
+                                                      "result": "paused"}])
+        self.patch("save_state", mock.Mock(side_effect=OSError("disk full")))
+        self.patch("disconnect_network", lambda: cut.append(1) or True)
+        self.patch("fullscreen_alert", lambda reason, status, paused=(): None)
+        self.patch("ask_defender", lambda paths: None)
+        self.addCleanup(rg.init_lang, "en")
+        rg.respond("test", dry_run=False)
+        self.assertEqual(cut, [1])
+
     def test_false_alarm_resumes_only_clean_programs(self):
         paused = [{"pid": 1, "name": "ok.exe", "path": r"C:\a\ok.exe"},
                   {"pid": 2, "name": "bad.exe", "path": r"C:\a\bad.exe"},
@@ -892,6 +922,22 @@ class PauseTests(TempDirTest):
         self.assertEqual(self.calls, [(1, False)])
         self.assertEqual(len(msgs), 5)
         self.assertIn("bad.exe (PID 2) stays paused", msgs[2])
+
+    def test_process_path_of_this_process(self):
+        self.assertEqual(rg.norm(rg.process_path(os.getpid())), rg.norm(sys.executable))
+        self.assertEqual(rg.process_path(0x7FFFFFF0), "")  # no such process
+
+    def test_warning_does_not_flash(self):
+        # the background is set once when the window is built; changing it in the timer made it flash
+        self.assertEqual(rg.ALERT_PS1.count("BackColor = $script:bright"), 1)
+        timer = rg.ALERT_PS1[rg.ALERT_PS1.index("$timer.add_Tick"):]
+        self.assertNotIn("BackColor", timer)
+
+    def test_build_script_packs_the_icon(self):
+        # without these the exe shows PyInstaller's default icon (v1.5.4 to v1.6.1 were built that way)
+        script = (Path(rg.__file__).parent / "build.bat").read_text(encoding="utf-8")
+        self.assertIn(r"--icon ..\icon.ico", script)
+        self.assertIn(r'--add-data "..\icon.ico;."', script)
 
     def test_real_writer_is_found_paused_and_resumed(self):
         # a harmless child that keeps overwriting the start of one file in a temp folder
@@ -962,6 +1008,22 @@ class DownloadScanTests(TempDirTest):
         f = Path(self.file("Downloads/a.exe", b"MZ"))
         self.assertTrue(rg.wait_until_written(f, settle=0.05))
         self.assertFalse(rg.wait_until_written(self.dl / "missing.exe", settle=0.05))
+        # Firefox's empty placeholder: the finished download is renamed onto it later (and scanned then)
+        self.assertFalse(rg.wait_until_written(self.file("Downloads/b.exe", b""), settle=0.05))
+
+    def test_a_file_defender_cannot_scan_is_not_a_threat(self):
+        # MpCmdRun exits with 2 both for "threat found" and for "could not scan" (e.g. the file is gone)
+        def fake_run(out):
+            return lambda *a, **k: subprocess.CompletedProcess(a, 2, out, b"")
+        with mock.patch.object(rg.subprocess, "run", fake_run(b"CmdTool: Failed with hr = 0x80070002.")):
+            self.assertIsNone(rg.defender_scan(r"C:\gone.exe"))
+        with mock.patch.object(rg.subprocess, "run", fake_run(b"Scanning C:\\evil.exe found 1 threats.")):
+            self.assertEqual(rg.defender_scan(r"C:\evil.exe"), 2)
+
+    @unittest.skipUnless(rg.MPCMDRUN.is_file(), "Microsoft Defender is not installed")
+    def test_real_defender_scan(self):
+        self.assertEqual(rg.defender_scan(self.file("clean.txt", b"just text")), 0)
+        self.assertIsNone(rg.defender_scan(str(self.dir / "missing.exe")))
 
     def test_handler_reports_new_and_renamed_files(self):
         seen = []
