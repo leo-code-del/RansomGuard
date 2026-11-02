@@ -23,7 +23,7 @@ The program copies itself to `C:\Program Files\RansomGuard` and starts in the ba
 
 ### If Windows Defender removes it
 
-Defender sometimes reports RansomGuard.exe as a threat (for example `Trojan:Win32/Bearfoos!ml`). The `!ml` means a machine-learning guess, not a known virus: programs packaged with PyInstaller that need administrator rights, stop processes and disable network adapters look suspicious to it. When that happens Defender also deletes the installed copy and its scheduled task, so **protection stops without any message**. Check now and then that the control panel shows "Running".
+Defender sometimes reports RansomGuard.exe as a threat (for example `Trojan:Win32/Bearfoos!ml`). The `!ml` means a machine-learning guess, not a known virus: programs packaged with PyInstaller that need administrator rights, stop processes and disable network adapters look suspicious to it. When that happens Defender also deletes the installed copy and its scheduled task, and protection stops. Since 1.7.0 a separate health check notices this: at sign-in and every day at noon it shows a message if protection is gone or monitoring is not running, and offers to open the download page or the control panel. It runs without opening a window and doesn't need RansomGuard.exe. Versions before 1.7.0 give no message, so check now and then that the control panel shows "Running".
 
 1. Compare the file's SHA-256 with the one shown under Assets on the [release page](https://github.com/leo-code-del/RansomGuard/releases) (PowerShell: `Get-FileHash RansomGuard.exe`). Only continue if they match.
 2. Windows Security → Virus & threat protection → Protection history → select the item → **Restore** (or **Allow on device**).
@@ -40,7 +40,7 @@ Any one of these triggers it:
 | Broken files | Within a short time, several .docx / .pdf / .jpg / .mp4 files get corrupted headers, or text files turn into what looks like encrypted data |
 | Unknown extensions | Many files renamed within a short time, e.g. `report.docx` → `report.docx.locked` |
 | Ransom notes | Files such as `HOW_TO_DECRYPT.txt` appear in several folders within a short time |
-| Dangerous commands | A program deletes restore points, disables boot recovery, deletes backups, clears event logs or turns off Defender (that program is terminated immediately) |
+| Dangerous commands | A program deletes restore points, disables boot recovery, deletes backups, clears event logs or turns off Defender. That command is terminated immediately, and the program that started it is paused, because ransomware usually does this just before it starts encrypting |
 
 Watched folders: Desktop, Documents, Pictures, Downloads, Videos, Music.
 
@@ -50,7 +50,7 @@ New programs, scripts and archives (`.exe`, `.msi`, `.js`, `.zip`...) in Downloa
 
 ## When it triggers
 
-1. The programs writing the most data are paused, which stops the encryption, and Microsoft Defender scans them. Windows' own processes, Defender and the desktop are never paused. Then all network adapters are disabled (the firewall is used as a fallback), and a red warning covers every screen that names the paused programs.
+1. The programs writing the most data (and the program behind a dangerous command) are paused, which stops the encryption, and Microsoft Defender scans them. Windows' own processes, Defender and the desktop are never paused. Then all network adapters are disabled (the firewall is used as a fallback), and a red warning covers every screen that names the paused programs.
 2. **Do not restore the network**, and do not plug in backup drives or USB sticks.
 3. If files are still being renamed or becoming unreadable one by one, hold the power button to force the computer off immediately.
 4. Take a photo of the ransom note with your phone, and use your phone to change the passwords of important accounts such as email and banking.

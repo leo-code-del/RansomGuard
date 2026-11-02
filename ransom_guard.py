@@ -11,7 +11,8 @@ Detection (any one of these triggers it):
   4. Within a short time, ransom notes appear in several folders (e.g. HOW_TO_DECRYPT.txt)
   5. A process runs a destructive command commonly used by ransomware/intruders: deleting restore
      points (vssadmin, wmic), disabling boot recovery (bcdedit), deleting backups (wbadmin), clearing
-     event logs, disabling Defender (in normal mode that process is terminated immediately)
+     event logs, disabling Defender (in normal mode that process is terminated immediately, and the program
+     that started it is paused)
 
 When triggered: pause the programs writing the most data (Microsoft Defender then scans them)
         -> disable every network adapter (fall back to a firewall block) -> write the log
@@ -21,6 +22,8 @@ When triggered: pause the programs writing the most data (Microsoft Defender the
 
 Also: new programs, scripts and archives in Downloads or on the Desktop are scanned by Microsoft Defender
       once they finish downloading, and the user is told if it finds a threat.
+      A separate health check (scheduled task, no RansomGuard.exe needed) warns at sign-in and daily when
+      background protection is gone (e.g. removed by Defender by mistake) or not running.
 
 Usage (Windows; normal mode needs administrator rights):
   python ransom_guard.py             monitor (the packaged .exe opens the control panel when run without options)
@@ -69,7 +72,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.6.2"  # bump this for a new release and create the matching GitHub Release (v1.6.2)
+VERSION = "1.7.0"  # bump this for a new release and create the matching GitHub Release (v1.7.0)
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -88,7 +91,7 @@ NOTE_DIR_THRESHOLD = 3       # trigger when ransom notes appear in this many fol
 PROCESS_MONITOR = True       # watch new processes and stop destructive commands (deleting restore points...)
 CHECK_INTERVAL = 15          # seconds between periodic checks of canary files and monitor health
 HIBERNATE_ON_TRIGGER = False  # True: hibernate right after cutting the network so encryption stops
-PAUSE_ON_TRIGGER = True      # pause the programs writing the most data when it triggers (stops the encryption)
+PAUSE_ON_TRIGGER = True      # pause the programs writing the most data, and the one behind a destructive command
 DEFENDER_SCAN_ON_TRIGGER = True  # have Microsoft Defender scan the paused programs and run a quick scan
 DEFENDER_SCAN_DOWNLOADS = True   # have Defender scan new programs, scripts and archives in Downloads / on the Desktop
 # ============================================
@@ -451,6 +454,7 @@ def kernel32():
             ("Process32FirstW", B, [H, ctypes.POINTER(_PROCESSENTRY32W)]),
             ("Process32NextW", B, [H, ctypes.POINTER(_PROCESSENTRY32W)]),
             ("GetProcessIoCounters", B, [H, ctypes.POINTER(ctypes.c_uint64 * 6)]),
+            ("GetProcessTimes", B, [H] + [ctypes.POINTER(ctypes.c_uint64)] * 4),
             ("MoveFileExW", B, [S, S, D])):
         fn = getattr(k32, name)
         fn.restype, fn.argtypes = res, args
@@ -724,7 +728,7 @@ def fullscreen_alert(reason: str, status: str, wait: bool = False, paused=()):
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         detail = tr(f"偵測時間：{now}\n原因：{reason}", f"Detected at: {now}\nReason: {reason}")
         if paused:
-            detail += "\n" + tr("大量寫入的程式：", "Programs writing heavily: ") + tr("、", ", ").join(
+            detail += "\n" + tr("可疑的程式：", "Suspicious programs: ") + tr("、", ", ").join(
                 tr(f"{p['name']}（PID {p['pid']}，{p['result']}）", f"{p['name']} (PID {p['pid']}, {p['result']})")
                 for p in paused)
         steps = [
@@ -1214,6 +1218,10 @@ class ProcessMonitor:
                           tr(f"無法終止：{ex}", f"could not terminate: {ex}"))
         else:
             result = tr("測試模式：未終止", "test mode: not terminated")
+        if PAUSE_ON_TRIGGER:
+            early = pause_ancestors(ppid, dry_run=not self.kill)
+            record_paused(early)  # right away: after a first trigger no respond() follows to record them
+            _early_paused.extend(early)
         log.critical(tr("可疑指令（%s）%s PID %s，父程序 PID %s，%s：%s",
                         "Suspicious command (%s) %s PID %s, parent PID %s, %s: %s"),
                      what, name, pid, ppid, result, cmdline)
@@ -1242,13 +1250,12 @@ PAUSE_SAFE = {"registry", "memory compression", "secure system", "smss.exe", "cs
 MPCMDRUN = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Windows Defender" / "MpCmdRun.exe"
 
 
-def write_counters() -> dict:
-    """{pid: (name, write operations, bytes written)} of every readable process except this program and its
-    children."""
+def process_list() -> list:
+    """[(pid, parent pid, program name)] of every running process."""
     k32 = kernel32()
     snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
     if not snap or snap == ctypes.c_void_p(-1).value:
-        return {}
+        return []
     procs = []
     e = _PROCESSENTRY32W(dwSize=ctypes.sizeof(_PROCESSENTRY32W))
     ok = k32.Process32FirstW(snap, ctypes.byref(e))
@@ -1256,8 +1263,27 @@ def write_counters() -> dict:
         procs.append((e.th32ProcessID, e.th32ParentProcessID, e.szExeFile))
         ok = k32.Process32NextW(snap, ctypes.byref(e))
     k32.CloseHandle(snap)
+    return procs
+
+
+def process_started(pid: int):
+    """When a process started (a FILETIME number), or None if it can't be read."""
+    k32 = kernel32()
+    h = k32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    t = [ctypes.c_uint64() for _ in range(4)]  # creation, exit, kernel, user
+    ok = k32.GetProcessTimes(h, *(ctypes.byref(x) for x in t))
+    k32.CloseHandle(h)
+    return t[0].value if ok else None
+
+
+def write_counters() -> dict:
+    """{pid: (name, write operations, bytes written)} of every readable process except this program and its
+    children."""
+    k32 = kernel32()
     me, out, io = os.getpid(), {}, (ctypes.c_uint64 * 6)()
-    for pid, ppid, name in procs:
+    for pid, ppid, name in process_list():
         if pid in (0, 4, me) or ppid == me:
             continue
         h = k32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
@@ -1324,19 +1350,76 @@ def pause_writers(dry_run: bool) -> list:
         path = process_path(pid)
         if trusted_process(name, path):
             continue
-        if dry_run:
-            paused, result = False, tr("測試模式：未暫停", "test mode: not paused")
-        else:
-            paused = set_paused(pid, True)
-            result = tr("已暫停", "paused") if paused else tr("無法暫停", "could not pause")
+        p = _pause(pid, name, path, dry_run)
         log.critical(tr("大量寫入的程式 %s（PID %s，%d 次寫入、%d KB），%s：%s",
                         "Program writing heavily %s (PID %s, %d writes, %d KB), %s: %s"),
-                     name, pid, writes, size // 1024, result, path)
-        found.append({"pid": pid, "name": name, "path": path, "paused": paused, "result": result})
+                     name, pid, writes, size // 1024, p["result"], path)
+        found.append(p)
         if len(found) >= PAUSE_MAX:
             break
     if not found:
         log.info(tr("沒有找到正在大量寫入的程式", "No program is writing heavily right now"))
+    return found
+
+
+def record_paused(entries):
+    """Remember the programs that were paused, so restore_network() resumes them if the user calls it a false
+    alarm. Never raises: nothing may stop the network from being cut."""
+    new = [p for p in entries if p["paused"]]
+    if not new:
+        return
+    try:
+        st = load_state()
+        known = {p.get("pid") for p in st.get("paused", [])}
+        st["paused"] = st.get("paused", []) + [p for p in new if p["pid"] not in known]
+        save_state(st)
+    except OSError:
+        log.exception(tr("無法記錄被暫停的程式", "Could not record the paused programs"))
+
+
+def _pause(pid, name, path, dry_run) -> dict:
+    """Pause one process (test mode: don't); the entry pause_writers() and pause_ancestors() return for it."""
+    if dry_run:
+        paused, result = False, tr("測試模式：未暫停", "test mode: not paused")
+    else:
+        paused = set_paused(pid, True)
+        result = tr("已暫停", "paused") if paused else tr("無法暫停", "could not pause")
+    return {"pid": pid, "name": name, "path": path, "paused": paused, "result": result}
+
+
+# Ransomware usually deletes restore points and backups *before* it encrypts anything, by starting
+# vssadmin, wmic etc. ProcessMonitor stops that command, but the program that started it is not writing
+# yet, so pause_writers() would not find it: its parent, grandparent... are paused right away instead.
+ANCESTOR_LEVELS = 3
+_early_paused = []  # what pause_ancestors() paused before the trigger; respond() reports it
+
+
+def pause_ancestors(ppid: int, dry_run: bool) -> list:
+    """Pause the process that started a destructive command and the ones above it, up to ANCESTOR_LEVELS,
+    stopping at Windows itself (e.g. explorer.exe, which runs what the user double-clicks) and at this
+    program. Each one must have started before the one below it, so a reused PID is never taken for a
+    parent that has exited."""
+    try:
+        parents = {pid: (parent, name) for pid, parent, name in process_list()}
+    except Exception:
+        log.exception(tr("讀取程序清單失敗", "Failed to list processes"))
+        return []
+    found, pid, below = [], ppid, None
+    for _ in range(ANCESTOR_LEVELS):
+        if pid in (0, 4, os.getpid()) or pid not in parents:
+            break
+        started = process_started(pid)
+        if below is not None and (started is None or started >= below):
+            break
+        name, path = parents[pid][1], process_path(pid)
+        if trusted_process(name, path):
+            break
+        p = _pause(pid, name, path, dry_run)
+        log.critical(tr("下達危險指令的程式 %s（PID %s），%s：%s",
+                        "Program that started the destructive command %s (PID %s), %s: %s"),
+                     name, pid, p["result"], path)
+        found.append(p)
+        pid, below = parents[pid][0], started
     return found
 
 
@@ -1861,6 +1944,107 @@ def install(report=print) -> bool:
         raise
 
 
+# Health check, run by its own scheduled task through wscript.exe (so no window opens, not even briefly).
+# It doesn't need RansomGuard.exe: when Defender removes that by mistake it also deletes the monitor's task,
+# and protection would otherwise stop without a word. Saved as UTF-16 (Windows Script Host reads UTF-8 as ANSI).
+HEALTH_TASK = "RansomGuard Health Check"
+HEALTH_JS = r'''// RansomGuard health check: tells the user when background protection is gone or not running.
+var TASK = "__TASK__";
+var RELEASES = "https://github.com/leo-code-del/RansomGuard/releases/latest";
+var sh = new ActiveXObject("WScript.Shell");
+var fso = new ActiveXObject("Scripting.FileSystemObject");
+var env = sh.Environment("PROCESS");
+var test = env("RG_HEALTH_TEST") != "";  // tests: print the result instead of asking
+if (test && env("RG_HEALTH_TASK") != "") TASK = env("RG_HEALTH_TASK");
+var appDir = (test && env("RG_HEALTH_APPDIR") != "") ? env("RG_HEALTH_APPDIR") : env("LOCALAPPDATA") + "\\RansomGuard";
+
+function readText(path) {
+    try {
+        var s = new ActiveXObject("ADODB.Stream");
+        s.Type = 2; s.Charset = "utf-8"; s.Open(); s.LoadFromFile(path);
+        var text = s.ReadText(); s.Close();
+        return text;
+    } catch (e) { return ""; }
+}
+
+// "removed", "stopped" or "" (fine, or unknown: then say nothing rather than raise a false alarm)
+function check() {
+    var task;
+    try {
+        var svc = new ActiveXObject("Schedule.Service");
+        svc.Connect();
+        task = svc.GetFolder("\\").GetTask(TASK);
+    } catch (e) {
+        return (e.number >>> 0) == 0x80070002 ? "removed" : "";  // 0x80070002: no such task
+    }
+    try {
+        var exe = sh.ExpandEnvironmentStrings(task.Definition.Actions.Item(1).Path).replace(/"/g, "");
+        if (!fso.FileExists(exe)) return "removed";
+        if (task.State == 4) return "";  // running
+    } catch (e) { return ""; }
+    // after a trigger the monitor stops on purpose, until the network is restored
+    if (/"triggered_at"\s*:\s*"[^"]/.test(readText(appDir + "\\state.json"))) return "";
+    return "stopped";
+}
+
+var problem = check();
+if (test) {
+    WScript.Echo(problem || "ok");
+    WScript.Quit(0);
+}
+if (problem) {
+    var lang = (readText(appDir + "\\settings.json").match(/"lang"\s*:\s*"(zh|en)"/) || [])[1];
+    if (!lang) {
+        try { lang = /^zh/i.test(sh.RegRead("HKCU\\Control Panel\\International\\LocaleName")) ? "zh" : "en"; }
+        catch (e) { lang = "en"; }
+    }
+    var zh = lang == "zh";
+    var msg = problem == "removed" ?
+        (zh ? "RansomGuard 的背景防護已經從這台電腦上消失了，最常見的原因是被 Microsoft Defender 誤判刪除。\n\n" +
+              "要開啟下載頁面重新安裝嗎？\n（下載 RansomGuard.exe 後執行，按「安裝／更新並開始監控」）"
+            : "RansomGuard's background protection is gone from this computer. Most often Microsoft Defender " +
+              "removed it by mistake.\n\nOpen the download page to install it again?\n(Download RansomGuard.exe, " +
+              "run it and click \"Install / update and start monitoring\".)") :
+        (zh ? "RansomGuard 的背景監控沒有在執行，這台電腦目前沒有勒索病毒防護。\n\n" +
+              "要開啟控制台嗎？（按「安裝／更新並開始監控」就會重新開始）"
+            : "RansomGuard's background monitoring is not running, so this computer has no ransomware " +
+              "protection right now.\n\nOpen the control panel? (Click \"Install / update and start " +
+              "monitoring\" to start it again.)");
+    // 4 = Yes/No, 48 = warning icon, 4096 = stays on top; 6 = Yes
+    if (sh.Popup(msg, 0, "RansomGuard", 4 + 48 + 4096) == 6) {
+        var lnk = sh.SpecialFolders("Desktop") + "\\RansomGuard.lnk";
+        sh.Run(problem == "stopped" && fso.FileExists(lnk) ? "\"" + lnk + "\"" : RELEASES);
+    }
+}
+'''.replace("__TASK__", TASK_NAME)
+
+
+def install_health_check(report):
+    """Save health_check.js next to the exe (only administrators can change it there) and run it at sign-in
+    (after the monitor had time to start) and every day."""
+    js = INSTALL_DIR / "health_check.js"
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    js.write_text(HEALTH_JS, encoding="utf-16")
+    rc, _, err = _ps(
+        r'$u = "$env:USERDOMAIN\$env:USERNAME"; '
+        f"$a = New-ScheduledTaskAction -Execute {_ps_quote(sys_exe('wscript.exe'))} "
+        f"-Argument {_ps_quote(f'//B //Nologo \"{js}\"')}; "
+        "$t1 = New-ScheduledTaskTrigger -AtLogOn -User $u; $t1.Delay = 'PT5M'; "
+        "$t2 = New-ScheduledTaskTrigger -Daily -At '12:00'; "
+        "$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited; "
+        "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable "
+        "-ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew; "
+        f"Register-ScheduledTask -TaskName {_ps_quote(HEALTH_TASK)} -Action $a -Trigger $t1, $t2 -Principal $p "
+        f"-Settings $s -Description {_ps_quote(tr('背景防護不見或沒有執行時提醒', 'Warns when background protection is gone or not running'))} "  # noqa: E501
+        "-Force -ErrorAction Stop | Out-Null")
+    if rc == 0:
+        report(tr("已建立防護狀態檢查（登入後與每天提醒防護是否還在）",
+                  "Health check created (warns at sign-in and daily if protection is gone)"))
+    else:  # not worth failing the install over
+        log.warning(tr("建立防護狀態檢查失敗：%s", "Could not create the health check: %s"), err)
+        report(tr(f"  無法建立防護狀態檢查：{err}", f"  Could not create the health check: {err}"))
+
+
 def _install(report) -> bool:
     global UPDATED_TO
     UPDATED_TO = fetch_update(report) if FROZEN else None
@@ -1887,6 +2071,7 @@ def _install(report) -> bool:
         "-Force -ErrorAction Stop | Out-Null")
     if rc != 0:
         raise RuntimeError(tr(f"建立排程工作失敗：{err}", f"Failed to create the scheduled task: {err}"))
+    install_health_check(report)
     report(tr("建立桌面捷徑「RansomGuard」...", "Creating the \"RansomGuard\" desktop shortcut..."))
     # the shortcut names an icon file of its own, so it never shows a stale icon cached for the exe path
     icon = icon_file()
@@ -1923,6 +2108,7 @@ def uninstall(report=print) -> bool:
     if task_state():
         report(tr(f"刪除排程工作失敗：{err}", f"Failed to delete the scheduled task: {err}"))
         return False
+    _ps(f"Unregister-ScheduledTask -TaskName {_ps_quote(HEALTH_TASK)} -Confirm:$false -ErrorAction SilentlyContinue")
     report(tr("已刪除排程工作", "Scheduled task deleted"))
     desktop_lnk().unlink(missing_ok=True)
     remove_canaries()
@@ -2432,18 +2618,16 @@ def respond(reason: str, dry_run: bool):
     init_lang()  # use the language most recently chosen in the control panel (the monitor may predate the change)
     log.critical(tr("偵測到疑似勒索病毒行為：%s", "Possible ransomware behavior detected: %s"), reason)
     # pause the encrypting program before anything else: every second it keeps running costs files
-    found = pause_writers(dry_run) if PAUSE_ON_TRIGGER and IS_WINDOWS else []
+    found = _early_paused[:]  # the programs behind a destructive command, paused already
+    _early_paused.clear()
+    if PAUSE_ON_TRIGGER and IS_WINDOWS:
+        seen = {p["pid"] for p in found}
+        found += [p for p in pause_writers(dry_run) if p["pid"] not in seen]
     if dry_run:
         log.warning(tr("[測試模式] 正式模式下，此時會切斷網路",
                        "[Test mode] In normal mode the network would be cut off now"))
         return fullscreen_alert(reason, "test", paused=found)
-    if any(p["paused"] for p in found):
-        try:
-            st = load_state()  # restore_network() resumes them if the user calls it a false alarm
-            st["paused"] = st.get("paused", []) + [p for p in found if p["paused"]]
-            save_state(st)
-        except OSError:  # nothing may stop the network from being cut
-            log.exception(tr("無法記錄被暫停的程式", "Could not record the paused programs"))
+    record_paused(found)
     if DEFENDER_SCAN_ON_TRIGGER and IS_WINDOWS:
         threading.Thread(target=ask_defender, args=([p["path"] for p in found if p["path"]],),
                          daemon=True).start()

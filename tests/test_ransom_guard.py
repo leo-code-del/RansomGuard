@@ -716,6 +716,45 @@ class UpdateTests(TempDirTest):
             rg.uninstall(msgs.append)
         return msgs
 
+    def test_health_check_is_installed_and_removed(self):
+        cmds = []
+        with mock.patch.object(rg, "_ps", lambda c: cmds.append(c) or (0, "", "")):
+            rg.install_health_check(lambda m: None)
+        js = rg.INSTALL_DIR / "health_check.js"
+        self.assertEqual(js.read_bytes()[:2], b"\xff\xfe")  # UTF-16 with BOM, so Chinese text survives
+        self.assertIn('var TASK = "RansomGuard";', js.read_text(encoding="utf-16"))
+        self.assertIn("wscript.exe", cmds[0])
+        self.assertIn(str(js), cmds[0])
+        self.assertIn("-Trigger $t1, $t2", cmds[0])
+        self.assertIn("RunLevel Limited", cmds[0])
+        cmds.clear()
+        with mock.patch.object(rg, "stop_monitor", lambda: None), \
+                mock.patch.object(rg, "_ps", lambda c: cmds.append(c) or (0, "", "")), \
+                mock.patch.object(rg, "task_state", lambda: ""), mock.patch.object(rg, "remove_canaries", lambda: None), \
+                mock.patch.object(rg, "desktop_lnk", lambda: self.dir / "RansomGuard.lnk"):
+            rg.uninstall(lambda m: None)
+        self.assertTrue(any("Unregister-ScheduledTask" in c and rg.HEALTH_TASK in c for c in cmds))
+
+    def health(self, task, state=None):
+        """Run the real health check script (read-only) in test mode against a scheduled task."""
+        js = self.dir / "health_check.js"
+        js.write_text(rg.HEALTH_JS, encoding="utf-16")
+        app = self.dir / "app"
+        app.mkdir(exist_ok=True)
+        (app / "state.json").write_text(json.dumps(state or {}), encoding="utf-8")
+        env = dict(os.environ, RG_HEALTH_TEST="1", RG_HEALTH_TASK=task, RG_HEALTH_APPDIR=str(app))
+        r = subprocess.run([os.path.join(os.environ["SystemRoot"], "System32", "cscript.exe"), "//Nologo", str(js)],
+                           capture_output=True, env=env, timeout=60)
+        return r.stdout.decode("ascii", "replace").strip()
+
+    def test_health_check_script(self):
+        self.assertEqual(self.health("RansomGuard_no_such_task_" + os.urandom(3).hex()), "removed")
+        defrag = r"\Microsoft\Windows\Defrag\ScheduledDefrag"  # exists, not running, its program exists
+        if self.health(defrag) == "removed":
+            self.skipTest("this Windows has no defrag task")
+        self.assertEqual(self.health(defrag), "stopped")
+        self.assertEqual(self.health(defrag, {"triggered_at": "2026-11-02 10:00:00"}), "ok")  # stopped on purpose
+
     def test_uninstall_removes_the_whole_folder(self):
         for name in ("icon.ico", "RansomGuard.old-1234abcd.exe"):
             (rg.INSTALL_DIR / name).write_bytes(b"x")
@@ -810,8 +849,10 @@ class ProcessMonitorTests(unittest.TestCase):
             pm.start()
             self.addCleanup(pm.stop)
             time.sleep(4)  # let the WMI subscription start
-            # lives ~0.4 s: without administrator rights only WMI polling (every 0.5 s) can see it
-            subprocess.run(f'cmd.exe /c ""{sys.executable}" -c "import time; time.sleep(0.25)" & rem {marker}"')
+            # without administrator rights only WMI polling (every 0.5 s) can see it. It lives ~1 s: the
+            # polling catches ~0.4 s processes on an idle computer, but its interval stretches when the
+            # computer is busy (e.g. Defender scanning the files other tests write), and 0.4 s then failed
+            subprocess.run(f'cmd.exe /c ""{sys.executable}" -c "import time; time.sleep(1)" & rem {marker}"')
             got.wait(15)
         self.assertTrue(hits, "process monitor did not report the marked process")
         self.assertIn("cmd.exe", hits[0])
@@ -922,6 +963,88 @@ class PauseTests(TempDirTest):
         self.assertEqual(self.calls, [(1, False)])
         self.assertEqual(len(msgs), 5)
         self.assertIn("bad.exe (PID 2) stays paused", msgs[2])
+
+    def fake_tree(self, tree, started):
+        """tree: {pid: (parent pid, name, path)}; started: {pid: start time}."""
+        self.patch("process_list", lambda: [(pid, parent, name) for pid, (parent, name, _) in tree.items()])
+        self.patch("process_path", lambda pid: tree[pid][2] if pid in tree else "")
+        self.patch("process_started", lambda pid: started.get(pid))
+        self.calls = []
+        self.patch("set_paused", lambda pid, paused: self.calls.append((pid, paused)) or True)
+
+    def test_program_behind_a_destructive_command_is_paused(self):
+        # explorer -> evil.exe -> cmd.exe -> (vssadmin, already stopped)
+        tree = {30: (1, "explorer.exe", rf"{WIN}\explorer.exe"), 40: (30, "evil.exe", r"C:\Users\u\evil.exe"),
+                50: (40, "cmd.exe", rf"{WIN}\System32\cmd.exe")}
+        self.fake_tree(tree, {30: 100, 40: 200, 50: 300})
+        found = rg.pause_ancestors(50, dry_run=False)
+        self.assertEqual([p["pid"] for p in found], [50, 40])  # stops at explorer.exe
+        self.assertEqual(self.calls, [(50, True), (40, True)])
+
+    def test_a_reused_pid_is_not_taken_for_a_parent(self):
+        tree = {40: (30, "unrelated.exe", r"C:\x\unrelated.exe"), 50: (40, "cmd.exe", rf"{WIN}\System32\cmd.exe")}
+        self.fake_tree(tree, {40: 900, 50: 300})  # "parent" 40 started after its child: the real one has exited
+        self.assertEqual([p["pid"] for p in rg.pause_ancestors(50, dry_run=False)], [50])
+
+    def test_ancestors_stop_at_this_program_and_in_test_mode_nothing_is_paused(self):
+        me = os.getpid()
+        tree = {me: (1, "RansomGuard.exe", r"C:\x\RansomGuard.exe"), 50: (me, "cmd.exe", rf"{WIN}\System32\cmd.exe")}
+        self.fake_tree(tree, {me: 100, 50: 300})
+        found = rg.pause_ancestors(50, dry_run=True)
+        self.assertEqual([(p["pid"], p["paused"]) for p in found], [(50, False)])
+        self.assertEqual(self.calls, [])
+
+    def test_programs_paused_behind_a_command_are_recorded_at_once(self):
+        # also after a first trigger, when no respond() follows to record them
+        evil = {"pid": 40, "name": "evil.exe", "path": r"C:\x\evil.exe", "paused": True, "result": "paused"}
+        hits = []
+        self.patch("app_dir", lambda: self.dir)
+        self.patch("pause_ancestors", lambda ppid, dry_run: [dict(evil)])
+        self.addCleanup(rg._early_paused.clear)
+        marker = "rgtest-" + os.urandom(4).hex()
+        with mock.patch.object(rg, "DANGEROUS_CMDS", [(rg.re.compile(marker), "test", "test")]), \
+                mock.patch.object(rg.os, "kill", lambda pid, sig: None):
+            pm = rg.ProcessMonitor(hits.append, kill=True)
+            pm._check(100, 40, "cmd.exe", f"cmd /c {marker}")
+            pm._check(101, 40, "cmd.exe", f"cmd /c {marker}")  # the same program again
+        self.assertEqual(len(hits), 2)
+        self.assertEqual(rg.load_state()["paused"], [evil])
+        rg.record_paused([{**evil, "pid": 41}, {**evil, "pid": 42, "paused": False}])
+        self.assertEqual([p["pid"] for p in rg.load_state()["paused"]], [40, 41])
+
+    def test_trigger_reports_programs_paused_early_once(self):
+        evil = {"pid": 40, "name": "evil.exe", "path": r"C:\x\evil.exe", "paused": True, "result": "paused"}
+        alerts = []
+        self.patch("app_dir", lambda: self.dir)
+        self.patch("IS_WINDOWS", True)
+        self.patch("pause_writers", lambda dry_run: [dict(evil), {**evil, "pid": 41, "name": "other.exe"}])
+        self.patch("disconnect_network", lambda: True)
+        self.patch("fullscreen_alert", lambda reason, status, paused=(): alerts.append(paused))
+        self.patch("ask_defender", lambda paths: None)
+        self.addCleanup(rg.init_lang, "en")
+        rg._early_paused.append(evil)
+        rg.respond("test", dry_run=False)
+        self.assertEqual([p["pid"] for p in alerts[0]], [40, 41])
+        self.assertEqual(rg._early_paused, [])
+
+    def test_real_chain_of_parents_is_paused(self):
+        # this test -> A -> B, all harmless Python processes; B's parent chain is paused up to this test
+        code_b = "import time; time.sleep(60)"
+        code_a = ("import subprocess, sys, time\n"
+                  f"b = subprocess.Popen([sys.executable, '-c', {code_b!r}])\n"
+                  "print(b.pid, flush=True)\ntime.sleep(60)\n")
+        a = subprocess.Popen([sys.executable, "-c", code_a], stdout=subprocess.PIPE)
+        b_pid = int(a.stdout.readline())
+        self.addCleanup(a.stdout.close)
+        self.addCleanup(a.wait)
+        self.addCleanup(a.kill)
+        self.addCleanup(lambda: subprocess.run(["taskkill", "/F", "/PID", str(b_pid)], capture_output=True))
+        self.assertLess(rg.process_started(a.pid), rg.process_started(b_pid))
+        found = rg.pause_ancestors(b_pid, dry_run=False)
+        self.assertEqual([p["pid"] for p in found], [b_pid, a.pid])
+        self.assertTrue(all(p["paused"] for p in found))
+        for p in found:
+            self.assertTrue(rg.set_paused(p["pid"], False))
 
     def test_process_path_of_this_process(self):
         self.assertEqual(rg.norm(rg.process_path(os.getpid())), rg.norm(sys.executable))
