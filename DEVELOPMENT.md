@@ -76,6 +76,10 @@ The tests only use temporary folders and never touch your files, the network set
 
 Some tests use read-only Windows features for real: watching new processes through WMI, Defender scans of temporary files, and reading scheduled tasks.
 
+## Dependency updates
+
+[Dependabot](.github/dependabot.yml) opens a pull request once a week when a newer version of a pinned GitHub Action or Python package exists. CI builds and tests it on Windows; merge it only if CI passes. Python itself stays pinned in the workflows until a newer version is checked to work with PyInstaller.
+
 ## Publishing a new version
 
 Releases are built and published by GitHub Actions, never uploaded by hand:
