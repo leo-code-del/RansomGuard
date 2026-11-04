@@ -1,6 +1,6 @@
 # Packages for building RansomGuard.exe (build.bat) and checking the code. Exact versions, so every
 # build, on this computer or on GitHub Actions, uses the same ones.
 -r requirements.txt
-pyinstaller==6.21.0
-pyinstaller-hooks-contrib==2026.6
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
 pyflakes==4.1.0
