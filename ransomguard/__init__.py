@@ -13,6 +13,7 @@ Modules, roughly in the order a trigger goes through them:
   network    cutting the network off and restoring it
   install    scheduled task, install, uninstall, health check
   updates    new versions from GitHub
+  backup     whether files are backed up (File History, OneDrive) and the backup reminder
   gui        the control panel
   app        the monitor's main loop and the command line
 

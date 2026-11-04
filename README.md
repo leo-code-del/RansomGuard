@@ -95,6 +95,7 @@ The buttons are in two groups. Rest the mouse on a button to see what it does. O
 | | **Clear log** | Empties the log, which lists the files and programs that were detected |
 | **Bottom** | **Check for updates automatically** | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
 | | **Watched folders…** | Adds or removes folders watched besides the default ones. Saving restarts background monitoring |
+| | **Backup…** | RansomGuard can't bring encrypted files back; only a backup can. The **Backup** row shows whether File History or OneDrive backs up your files and when File History last did, and this button explains how to set one up and opens Windows' settings. Without an up-to-date backup the background monitor reminds you, at most every 14 days; tick "I back up with another program" to stop that |
 | | **Uninstall** | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder, the log and settings and the state data |
 | **Top right** | **English / 中文(繁體)** | Switches the interface language |
 
@@ -138,13 +139,14 @@ RansomGuard.exe asks for administrator rights (User Account Control) when it sta
 
 - **Files** that change in Desktop, Documents, Pictures, Downloads, Videos and Music. For common formats (Office files, PDF, pictures, videos, text files) only the first 16 KB, to check whether the file looks encrypted; of Office files, zip archives, PDFs and large text files also the last 4 KB and, for Office files and zip archives, the few bytes where each part starts. A new file of an unknown type is read only when a file is deleted in the same folder at the same moment. OneDrive files that are not downloaded yet are skipped. Other drives and network drives are not read, unless you add them with **Watched folders…** (or `--watch`).
 - **Programs:** the command line of every program that starts, to spot the dangerous commands listed above; only those are written to the log. When it triggers, it also reads how much each running program has written.
+- **Backup settings:** when File History last backed up (Windows' record of it and File History's own folder in `%LOCALAPPDATA%`) and whether Desktop, Documents and Pictures are in OneDrive. Nothing about your backup is changed or sent anywhere.
 
 ### What it creates or changes
 
 | Where | What |
 | --- | --- |
 | Every watched folder | Three hidden canary files (`0000 Scan index.docx`, `Household budget.xlsx`, `ZZ Archive notes.docx`) |
-| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `settings.json` (language, automatic update checks) |
+| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `settings.json` (language, automatic update checks, whether you back up with another program, when it last reminded you about a backup) |
 | `C:\ProgramData\RansomGuard\` | `state.json` (what was cut off or paused, and the detection report: why it triggered and up to 50 files that looked encrypted, kept until you restore the network), `canaries.json` (which canary files it created), `watch.json` (folders you added), `monitor_stopped` (when you stopped monitoring). Only administrators can change this folder; your account can read it |
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`, `icon.ico`, `health_check.js` |
 | `%TEMP%` | A `_MEI…` folder the exe unpacks itself into while it runs, removed when it exits. `MpCmdRun.log`, the log Microsoft Defender's scanner keeps of the scans RansomGuard asks for |

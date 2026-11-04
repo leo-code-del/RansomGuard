@@ -5,12 +5,15 @@ import threading
 import time
 from pathlib import Path
 
-from . import canary, config, defender, detection, folders, gui, install, network, processes, response, storage, updates, winapi
+from . import (backup, canary, config, defender, detection, folders, gui, install, network, processes, response,
+               storage, updates, winapi)
 from .config import log, tr
 
 
 # how often (seconds) folders that aren't watched are looked for: looking up a NAS that is off can take a while
 REWATCH_INTERVAL = 60
+# seconds after the monitor starts before the backup is first checked (not on top of everything at sign-in)
+BACKUP_CHECK_DELAY = 600
 
 
 def run(args, stop=None):
@@ -140,7 +143,8 @@ def run(args, stop=None):
              "; ".join(str(d) for d in watch_dirs))
     log.info(tr("誘餌檔：%s", "Canary files: %s"), "; ".join(str(p) for p in canaries))
     try:
-        last = pruned = probed = time.time()
+        last = pruned = probed = started = time.time()
+        backup_checked = 0.0
         while not stop.wait(1):
             if time.time() - last < config.CHECK_INTERVAL:
                 continue
@@ -151,6 +155,12 @@ def run(args, stop=None):
             if last - pruned > 86400:  # the monitor can run for weeks: keep the log to LOG_KEEP_DAYS anyway
                 pruned = last
                 storage.prune_own_log()
+            if not args.dry_run and last - started >= BACKUP_CHECK_DELAY and last - backup_checked > 86400:
+                backup_checked = last  # once a day; it reminds at most every REMIND_DAYS days
+                try:
+                    backup.remind_if_needed()
+                except Exception:
+                    log.exception(tr("檢查備份狀態時發生錯誤", "Error while checking the backup"))
             # restart a monitor component that stopped unexpectedly and watch folders that came back, up to 10
             # times an hour, so a crash loop doesn't spin but a drive coming and going isn't fatal either
             if last - restarts_since > 3600:

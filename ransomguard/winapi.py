@@ -239,6 +239,17 @@ def alert(title: str, msg: str):
     threading.Thread(target=_box).start()
 
 
+def notice(title: str, msg: str):
+    """Show a topmost information box (not a warning; without blocking the monitor)."""
+    if not config.IS_WINDOWS:
+        log.info("%s: %s", title, msg.replace("\n", " "))
+        return
+
+    def _box():
+        ctypes.windll.user32.MessageBoxW(None, msg, title, 0x40 | 0x40000)  # MB_ICONINFORMATION | MB_TOPMOST
+    threading.Thread(target=_box, daemon=True).start()
+
+
 def ps_encoded_args(script: str, *opts: str) -> list:
     """Run a PowerShell script with -EncodedCommand (no file needed)."""
     enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")

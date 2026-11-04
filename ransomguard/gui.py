@@ -6,7 +6,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import canary, config, folders, install, network, response, storage, updates, winapi
+from . import backup, canary, config, folders, install, network, response, storage, updates, winapi
 from .config import log, tr
 from .winapi import norm
 
@@ -216,7 +216,17 @@ def gui(auto_update=False):
         q.put(("msg", msg))
 
     def refresh():
-        threading.Thread(target=lambda: q.put(("status", status_info())), daemon=True).start()
+        def work():
+            q.put(("status", status_info()))
+            q.put(("backup", backup.backup_status()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_backup(info):
+        text, level, note = info
+        dot, val, detail = w["backup"]
+        dot.config(fg=C[level])
+        val.config(text=text, fg=C["bad"] if level == "bad" else C["text"])
+        detail.config(text=note)
 
     def run_bg(fn):
         for b in buttons:
@@ -244,6 +254,8 @@ def gui(auto_update=False):
                     write(msg, "err" if msg.startswith(("[失敗]", "[Failed]")) else None)
                 elif kind == "status":
                     show_status(msg)
+                elif kind == "backup":
+                    show_backup(msg)
                 elif kind == "update":  # the automatic check found a newer version when the window opened
                     if msg and not w.get("working"):
                         offer_update(msg)
@@ -397,6 +409,66 @@ def gui(auto_update=False):
             side="right", padx=(0, px(6)))
         dlg.update_idletasks()
         dlg.geometry(f"+{root.winfo_rootx() + px(30)}+{root.winfo_rooty() + px(60)}")
+        dlg.grab_set()
+
+    def on_backup():
+        """Dialog: why a backup matters and how to set one up (Windows' own settings open; nothing is changed here)."""
+        title = tr("備份", "Backup")
+        F = w["font"]
+        dlg = tk.Toplevel(root)
+        dlg.title(title)
+        dlg.configure(bg=C["bg"])
+        dlg.resizable(False, False)
+        dlg.transient(root)
+        pad = tk.Frame(dlg, bg=C["bg"])
+        pad.pack(fill="both", padx=px(20), pady=px(16))
+
+        def label(text, bold=False, muted=False, gap=(0, 0)):
+            tk.Label(pad, text=text, font=(F, 10, "bold") if bold else (F, 9), fg=C["muted"] if muted else C["text"],
+                     bg=C["bg"], justify="left", wraplength=px(440)).pack(anchor="w", pady=gap)
+
+        def button(text, cmd):
+            make_button(pad, text, cmd, "secondary", track=False)[0].pack(anchor="w", pady=(px(4), px(12)))
+
+        def opened(fn):
+            def run():
+                try:
+                    fn()
+                except OSError as ex:
+                    messagebox.showerror(title, str(ex), parent=dlg)
+            return run
+        text, _, note = backup.backup_status()
+        label(tr(f"目前：{text}（{note}）", f"Now: {text} ({note})"), bold=True, gap=(0, px(4)))
+        # (no-break spaces after the Latin words: Tk breaks lines at spaces, and there would be no other one)
+        label(tr("RansomGuard 能在勒索病毒發作時切斷網路，但沒辦法救回已經被加密的檔案，只有備份可以。",
+                 "RansomGuard cuts the network when ransomware strikes, but it can't bring encrypted files back. "
+                 "Only a backup can."), muted=True, gap=(0, px(12)))
+        label(tr("檔案歷程記錄：備份到外接硬碟", "File History: back up to an external drive"), bold=True)
+        label(tr("Windows 內建，定期把檔案複製到外接硬碟。備份完把硬碟拔掉：一直接著的硬碟會被勒索病毒一起加密。",
+                 "Built into Windows: copies your files to an external drive regularly. Unplug the drive after a "
+                 "backup: a drive that stays connected gets encrypted too."))
+        button(tr("開啟檔案歷程記錄", "Open File History"),
+               opened(lambda: subprocess.Popen([winapi.sys_exe("control.exe"), "/name", "Microsoft.FileHistory"])))
+        label(tr("OneDrive：桌面、文件、圖片放到雲端", "OneDrive: keep Desktop, Documents and Pictures in the cloud"), bold=True)
+        label(tr("檔案會保留舊版本，被加密後可以還原到之前的版本。需要 Microsoft 帳號。",
+                 "Earlier versions of each file are kept, so encrypted files can be restored. Needs a Microsoft account."))
+        button(tr("開啟 Windows 備份設定", "Open Windows backup settings"), opened(lambda: os.startfile("ms-settings:backup")))
+        other = tk.BooleanVar(value=config.load_settings().get("other_backup") is True)
+
+        def on_other():
+            config.set_setting("other_backup", bool(other.get()))
+        tk.Checkbutton(pad, text=tr("我用其他備份程式（不再提醒）", "I back up with another program (no more reminders)"),
+                       variable=other, command=on_other, font=(F, 10), fg=C["text"], bg=C["bg"],
+                       activebackground=C["bg"], selectcolor=C["card"], highlightthickness=0, bd=0,
+                       cursor="hand2").pack(anchor="w", pady=(0, px(12)))
+
+        def close():
+            dlg.destroy()
+            refresh()
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        make_button(pad, tr("關閉", "Close"), close, "primary", track=False)[0].pack(anchor="e")
+        dlg.update_idletasks()
+        dlg.geometry(f"+{root.winfo_rootx() + px(30)}+{root.winfo_rooty() + px(40)}")
         dlg.grab_set()
 
     def on_auto_update():
@@ -554,6 +626,25 @@ def gui(auto_update=False):
         w["mon"] = card(0, tr("背景監控", "Background monitoring"))
         w["net"] = card(1, tr("網路", "Network"))
 
+        # backup: what brings encrypted files back, which RansomGuard itself can't
+        brow = tk.Frame(body, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
+        brow.pack(fill="x", pady=(px(10), 0))
+        tk.Label(brow, text=tr("備份", "Backup"), font=(FONT, 10), fg=C["muted"],
+                 bg=C["card"]).pack(side="left", padx=(px(16), px(10)), pady=px(6))
+        bdot = tk.Label(brow, text="●", font=(FONT, 12), fg=C["off"], bg=C["card"])
+        bdot.pack(side="left")
+        bval = tk.Label(brow, text=tr("讀取中...", "Loading..."), font=(FONT, 11, "bold"), fg=C["text"], bg=C["card"])
+        bval.pack(side="left", padx=(px(4), px(10)))
+        rim, b = make_button(brow, tr("備份…", "Backup…"), on_backup, "secondary",
+                             tr("備份的設定方式，以及勒索病毒發作後怎麼救回檔案。", "How to set up a backup: the only way to "
+                                "bring encrypted files back."))
+        b.config(font=(FONT, 10), padx=px(10), pady=px(2))
+        rim.pack(side="right", padx=(0, px(12)))
+        # one short line (the window has a fixed size); the "Backup…" dialog says more
+        bnote = tk.Label(brow, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"], anchor="w")
+        bnote.pack(side="left", fill="x", expand=True)
+        w["backup"] = (bdot, bval, bnote)
+
         def section(title):
             row = tk.Frame(body, bg=C["bg"])
             row.pack(fill="x", pady=(px(18), px(6)))
@@ -605,7 +696,7 @@ def gui(auto_update=False):
                              fg=C["ok"], bg=C["bg"])
         w["busy"].pack(side="right")
         w["out"] = out = scrolledtext.ScrolledText(
-            body, width=60, height=5, font=(FONT, 10), wrap="word", relief="flat", bd=0,
+            body, width=60, height=3, font=(FONT, 10), wrap="word", relief="flat", bd=0,
             bg=C["card"], fg=C["text"], highlightthickness=1, highlightbackground=C["border"],
             highlightcolor=C["border"], padx=px(10), pady=px(8))
         out.pack(fill="both", expand=True)  # takes up any spare room of the fixed-size window
