@@ -14,7 +14,7 @@
 [![CI](https://github.com/leo-code-del/RansomGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/leo-code-del/RansomGuard/actions/workflows/ci.yml)
 [![最新版本](https://img.shields.io/github/v/release/leo-code-del/RansomGuard?label=最新版本)](https://github.com/leo-code-del/RansomGuard/releases/latest)
 
-Windows 10 / 11 · 英文與中文(繁體)介面 · [所有版本](https://github.com/leo-code-del/RansomGuard/releases) · [隱私權說明](PRIVACY.zh-TW.md)
+Windows 10 / 11 · 英文與中文(繁體)介面 · [所有版本](https://github.com/leo-code-del/RansomGuard/releases) · [隱私權說明](PRIVACY.zh-TW.md) · [Code signing policy](#code-signing-policy-程式碼簽章政策) · [MIT 授權](LICENSE)
 
 </div>
 
@@ -30,6 +30,7 @@ Windows 10 / 11 · 英文與中文(繁體)介面 · [所有版本](https://githu
 - [更新](#更新)
 - [它會對電腦做什麼](#它會對電腦做什麼)
 - [驗證下載的檔案](#驗證下載的檔案)
+- [Code signing policy 程式碼簽章政策](#code-signing-policy-程式碼簽章政策)
 - [如果被 Microsoft Defender 刪除](#如果被-microsoft-defender-刪除)
 - [已知限制與風險](#已知限制與風險)
 - [開發方式](#開發方式)
@@ -205,6 +206,18 @@ gh attestation verify RansomGuard.exe --repo leo-code-del/RansomGuard
   ```
 
 **沒有 GitHub CLI 的話**，可以比對[版本頁面](https://github.com/leo-code-del/RansomGuard/releases) Assets 底下顯示的 SHA-256 和 PowerShell 的 `Get-FileHash RansomGuard.exe`。
+
+## Code signing policy 程式碼簽章政策
+
+RansomGuard.exe **目前還沒有數位簽章**。本專案打算申請 [SignPath Foundation](https://signpath.org) 為開源軟體提供的免費程式碼簽章。在發布的版本真正簽章之前，請依照[驗證下載的檔案](#驗證下載的檔案)檢查下載的檔案。
+
+如果申請通過，簽章的版本會附上這段聲明：Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- **簽章的對象：** 只有由本 repo 原始碼、在 GitHub Actions 上透過[發布 workflow](.github/workflows/release.yml) 打包的 `RansomGuard.exe`。在個人電腦上打包的檔案一律不簽章。
+- **提交者與審閱者（Committers and reviewers）：** [leo-code-del](https://github.com/leo-code-del)
+- **核准者（Approvers）：** [leo-code-del](https://github.com/leo-code-del)，每個版本簽章前都要經過核准。
+- **隱私：** 除非使用者要求（向 GitHub 檢查和下載更新），RansomGuard 不會把任何資訊傳送到其他網路系統。詳見[隱私權說明](PRIVACY.zh-TW.md)。
+- **授權：** [MIT](LICENSE)。
 
 ## 如果被 Microsoft Defender 刪除
 

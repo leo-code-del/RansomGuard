@@ -49,7 +49,7 @@ jobs:
           if (-not (Test-Path "release-notes/$env:TAG.md")) { throw "release-notes/$env:TAG.md is missing" }
 
       - name: Check for mistakes (pyflakes)
-        run: python -m pyflakes ransom_guard.py ransomguard make_icon.py check_build.py tests .github/scripts
+        run: python -m pyflakes ransom_guard.py ransomguard make_icon.py make_version_info.py check_build.py tests .github/scripts
 
       - name: Run the tests
         run: python -m unittest discover -s tests -v

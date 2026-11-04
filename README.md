@@ -14,7 +14,7 @@ so files stop being encrypted and your data isn't sent out.
 [![CI](https://github.com/leo-code-del/RansomGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/leo-code-del/RansomGuard/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/leo-code-del/RansomGuard)](https://github.com/leo-code-del/RansomGuard/releases/latest)
 
-Windows 10 / 11 · English and 中文(繁體) · [All versions](https://github.com/leo-code-del/RansomGuard/releases) · [Privacy](PRIVACY.md)
+Windows 10 / 11 · English and 中文(繁體) · [All versions](https://github.com/leo-code-del/RansomGuard/releases) · [Privacy](PRIVACY.md) · [Code signing policy](#code-signing-policy) · [MIT License](LICENSE)
 
 </div>
 
@@ -30,6 +30,7 @@ Windows 10 / 11 · English and 中文(繁體) · [All versions](https://github.c
 - [Updates](#updates)
 - [What it does to your computer](#what-it-does-to-your-computer)
 - [Verify the download](#verify-the-download)
+- [Code signing policy](#code-signing-policy)
 - [If Microsoft Defender removes it](#if-microsoft-defender-removes-it)
 - [Known limitations and risks](#known-limitations-and-risks)
 - [How it is developed](#how-it-is-developed)
@@ -205,6 +206,18 @@ gh attestation verify RansomGuard.exe --repo leo-code-del/RansomGuard
   ```
 
 **Without the GitHub CLI**, compare the SHA-256 shown under Assets on the [release page](https://github.com/leo-code-del/RansomGuard/releases) with PowerShell's `Get-FileHash RansomGuard.exe`.
+
+## Code signing policy
+
+RansomGuard.exe is **not code-signed yet**. The project plans to apply to the [SignPath Foundation](https://signpath.org) program for free code signing of open-source software. Until a release is actually signed, check downloads as described in [Verify the download](#verify-the-download).
+
+If the application is approved, signed releases will carry this statement: Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- **What is signed:** only `RansomGuard.exe`, built by the [release workflow](.github/workflows/release.yml) on GitHub Actions from this repository's source code. Nothing built on a personal computer is signed.
+- **Committers and reviewers:** [leo-code-del](https://github.com/leo-code-del)
+- **Approvers:** [leo-code-del](https://github.com/leo-code-del) approves each release before it is signed.
+- **Privacy:** RansomGuard doesn't transfer any information to other networked systems unless the user asks it to (checking for and downloading updates from GitHub). See the [privacy page](PRIVACY.md).
+- **License:** [MIT](LICENSE).
 
 ## If Microsoft Defender removes it
 

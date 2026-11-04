@@ -1535,6 +1535,23 @@ class PauseTests(TempDirTest):
         self.assertIn(r"--icon ..\icon.ico", script)
         self.assertIn(r'--add-data "..\icon.ico;."', script)
         self.assertIn("check_build.py", script)  # an exe without Tcl/Tk data doesn't start (v1.7.1)
+        # code signing (SignPath) requires the product name and version in every signed exe
+        self.assertIn("make_version_info.py build\\version_info.txt", script)
+        self.assertIn(r'--version-file "%~dp0build\version_info.txt"', script)
+
+    def test_version_info_matches_config(self):
+        sys.path.insert(0, str(ROOT))
+        import make_version_info
+        version = make_version_info.read_version((ROOT / "ransomguard" / "config.py").read_text(encoding="utf-8"))
+        self.assertEqual(version, rg.VERSION)
+        text = make_version_info.version_info(version)
+        four = "(" + ", ".join(version.split(".") + ["0"]) + ")"
+        self.assertIn(f"filevers={four}", text)
+        self.assertIn(f"prodvers={four}", text)
+        self.assertIn("StringStruct('ProductName', 'RansomGuard')", text)
+        self.assertIn(f"StringStruct('ProductVersion', '{version}')", text)
+        with self.assertRaises(ValueError):
+            make_version_info.read_version('VERSION = "dev"')
 
     def test_build_check_finds_a_missing_tcl_tk(self):
         sys.path.insert(0, str(ROOT))
