@@ -247,7 +247,7 @@ Defender 有時會把 RansomGuard.exe 判定為威脅（例如 `Trojan:Win32/Bea
 
 修好後會從這裡移除。
 
-- **從 Python 原始碼執行，可能讓惡意程式取得系統管理員權限。** `install_ransom_guard.bat` 和 `ransom_guard.py --install` 建立的排程工作，會以系統管理員權限執行原本資料夾裡的 `ransom_guard.py`。如果那個資料夾不需要系統管理員權限就能修改（例如 D: 上的資料夾或你的使用者資料夾），任何以你的身分執行的程式都可以改這支腳本，在你下次登入時取得系統管理員權限。exe 版沒有這個問題：它會把自己複製到只有系統管理員能修改的 `C:\Program Files\RansomGuard`。如果要從原始碼執行，請把專案放在只有系統管理員能修改的資料夾。
+- **從 Python 原始碼執行，可能讓惡意程式取得系統管理員權限。** `install_ransom_guard.bat` 和 `ransom_guard.py --install` 建立的排程工作，會以系統管理員權限執行原本資料夾裡的 `ransom_guard.py` 和 `ransomguard` 套件。如果那個資料夾不需要系統管理員權限就能修改（例如 D: 上的資料夾或你的使用者資料夾），任何以你的身分執行的程式都可以改這些程式碼，在你下次登入時取得系統管理員權限。exe 版沒有這個問題：它會把自己複製到只有系統管理員能修改的 `C:\Program Files\RansomGuard`。如果要從原始碼執行，請把專案放在只有系統管理員能修改的資料夾。
 - **更新只對照 GitHub 檢查。** 用來核對更新的 SHA-256 同樣來自 GitHub，所以能防止下載損毀，但防不了 GitHub 帳號被入侵。程式內建的更新也不會檢查 attestation，不過你可以自己驗證（見[驗證下載的檔案](#驗證下載的檔案)）。exe 也沒有數位簽章，這也是 SmartScreen 和 Defender 有時不信任它的原因。
 
 ## 開發方式

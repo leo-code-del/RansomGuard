@@ -41,15 +41,15 @@ jobs:
       - name: Install packages
         run: python -m pip install -r requirements-build.txt
 
-      - name: Check the tag matches VERSION in ransom_guard.py
+      - name: Check the tag matches VERSION in ransomguard/config.py
         shell: pwsh
         run: |
-          $version = python -c "import re; print(re.search(r'^VERSION = \x22(.+?)\x22', open('ransom_guard.py', encoding='utf-8').read(), re.M).group(1))"
-          if ("v$version" -ne $env:TAG) { throw "Tag $env:TAG doesn't match VERSION = `"$version`" in ransom_guard.py" }
+          $version = python -c "import re; print(re.search(r'^VERSION = \x22(.+?)\x22', open('ransomguard/config.py', encoding='utf-8').read(), re.M).group(1))"
+          if ("v$version" -ne $env:TAG) { throw "Tag $env:TAG doesn't match VERSION = `"$version`" in ransomguard/config.py" }
           if (-not (Test-Path "release-notes/$env:TAG.md")) { throw "release-notes/$env:TAG.md is missing" }
 
       - name: Check for mistakes (pyflakes)
-        run: python -m pyflakes ransom_guard.py make_icon.py check_build.py tests .github/scripts
+        run: python -m pyflakes ransom_guard.py ransomguard make_icon.py check_build.py tests .github/scripts
 
       - name: Run the tests
         run: python -m unittest discover -s tests -v

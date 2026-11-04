@@ -8,6 +8,7 @@ Python whose Tcl/Tk 9 keeps that data inside its DLL, which PyInstaller didn't p
 only printed a warning.
 """
 import sys
+from pathlib import Path
 
 from PyInstaller.archive.readers import CArchiveReader
 
@@ -24,13 +25,24 @@ def missing(names) -> list:
     return [what for what, found in REQUIRED.items() if not any(found(n) for n in names)]
 
 
+def missing_modules(packed) -> list:
+    """The program's modules (every .py in the ransomguard folder) not among the packed module names; one
+    left out would only fail when that part of the program first runs."""
+    package = Path(__file__).resolve().parent / "ransomguard"
+    wanted = ["ransomguard"] + [f"ransomguard.{f.stem}" for f in sorted(package.glob("*.py")) if f.stem != "__init__"]
+    return [m for m in wanted if m not in packed]
+
+
 def main():
     exe = sys.argv[1] if len(sys.argv) > 1 else r"dist\RansomGuard.exe"
-    lacking = missing(list(CArchiveReader(exe).toc))
+    archive = CArchiveReader(exe)
+    lacking = missing(list(archive.toc))
+    pyz = next((n for n in archive.toc if n.endswith(".pyz")), None)
+    lacking += missing_modules(set(archive.open_embedded_archive(pyz).toc) if pyz else set())
     if lacking:
         print(f"{exe} is incomplete, it would not start: missing " + ", ".join(lacking))
         sys.exit(1)
-    print(f"{exe}: Tcl/Tk data and icon are packed")
+    print(f"{exe}: Tcl/Tk data, icon and all program modules are packed")
 
 
 if __name__ == "__main__":

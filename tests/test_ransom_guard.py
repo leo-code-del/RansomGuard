@@ -26,8 +26,59 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import ransom_guard as rg  # noqa: E402
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import importlib  # noqa: E402
+
+MODULES = [importlib.import_module(f"ransomguard.{name}") for name in (
+    "config", "winapi", "storage", "folders", "canary", "detection", "processes", "response", "defender",
+    "network", "install", "updates", "gui", "app")]
+
+
+class _Namespace:
+    """What mock.patch.object reads as the target's __dict__: the current value of each name."""
+
+    def __init__(self, program):
+        self.program = program
+
+    def __getitem__(self, name):
+        try:
+            return getattr(self.program, name)
+        except AttributeError:
+            raise KeyError(name) from None
+
+
+class Program:
+    """The whole program as one namespace, as the tests knew it when it was a single file. Reading a name finds
+    the module that defines it; replacing it (mock.patch.object) replaces it in that module. The modules refer
+    to each other as `module.name`, so the replacement takes effect everywhere, as it did before the split."""
+
+    _homes = {}  # decided once, before anything is replaced: a replacement no longer says where it belongs
+
+    @classmethod
+    def _home(cls, name):
+        if name not in cls._homes:
+            found = [m for m in MODULES if name in vars(m)]
+            if not found:
+                raise AttributeError(name)
+            # a function or class lives where it was defined; other names (constants, imported standard
+            # modules) exist in one module only, or are the same object everywhere
+            cls._homes[name] = next((m for m in found if getattr(vars(m)[name], "__module__", None) == m.__name__),
+                                    found[0])
+        return cls._homes[name]
+
+    def __getattr__(self, name):
+        return getattr(self._home(name), name)
+
+    def __setattr__(self, name, value):
+        setattr(self._home(name), name, value)
+
+    @property
+    def __dict__(self):
+        return _Namespace(self)
+
+
+rg = Program()
 
 rg.log.addHandler(logging.NullHandler())
 rg.log.propagate = False
@@ -1269,13 +1320,13 @@ class PauseTests(TempDirTest):
 
     def test_build_script_packs_the_icon(self):
         # without these the exe shows PyInstaller's default icon (v1.5.4 to v1.6.1 were built that way)
-        script = (Path(rg.__file__).parent / "build.bat").read_text(encoding="utf-8")
+        script = (ROOT / "build.bat").read_text(encoding="utf-8")
         self.assertIn(r"--icon ..\icon.ico", script)
         self.assertIn(r'--add-data "..\icon.ico;."', script)
         self.assertIn("check_build.py", script)  # an exe without Tcl/Tk data doesn't start (v1.7.1)
 
     def test_build_check_finds_a_missing_tcl_tk(self):
-        sys.path.insert(0, str(Path(rg.__file__).parent))
+        sys.path.insert(0, str(ROOT))
         try:
             import check_build
         except ImportError:
@@ -1285,6 +1336,9 @@ class PauseTests(TempDirTest):
         v171 = ["icon.ico", "tcl90.dll", "base_library.zip"]  # what the broken v1.7.1 contained
         self.assertEqual(len(check_build.missing(v171)), 3)
         self.assertEqual(check_build.missing([n for n in good if n != "icon.ico"]), ["icon (icon.ico)"])
+        modules = {"ransomguard"} | {m.__name__ for m in MODULES}
+        self.assertEqual(check_build.missing_modules(modules), [])
+        self.assertEqual(check_build.missing_modules(modules - {"ransomguard.gui"}), ["ransomguard.gui"])
 
     def test_real_writer_is_found_paused_and_resumed(self):
         # a harmless child that keeps overwriting the start of one file in a temp folder
