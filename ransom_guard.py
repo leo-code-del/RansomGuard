@@ -74,7 +74,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.7.4"  # bump this, add release-notes/v1.7.4.md and push the tag v1.7.4 to publish a release
+VERSION = "1.7.5"  # bump this, add release-notes/v1.7.5.md and push the tag v1.7.5 to publish a release
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -98,9 +98,15 @@ DEFENDER_SCAN_ON_TRIGGER = True  # have Microsoft Defender scan the paused progr
 DEFENDER_SCAN_DOWNLOADS = True   # have Defender scan new programs, scripts and archives in Downloads / on the Desktop
 # ============================================
 
-CANARY_NAMES = ["!!!_canary_do_not_delete.docx", "!!!_canary_do_not_delete.xlsx", "zzz_canary_do_not_delete.docx"]
-# names used before v1.3.0; the monitor deletes them when it starts
-LEGACY_CANARY_NAMES = ["!!!_canary_勿刪.docx", "!!!_canary_勿刪.xlsx", "zzz_canary_勿刪.docx"]
+# Canary files look like ordinary documents, so ransomware that skips obvious decoys still reaches them, and
+# they are hidden, so people don't come across them. The names sort first, in the middle and last, because
+# ransomware usually works through a folder in name order. Placed in every watched folder; a file of the
+# user's that happens to have one of these names is never touched (see plant_canaries).
+CANARY_NAMES = ["0000 Scan index.docx", "Household budget.xlsx", "ZZ Archive notes.docx"]
+# names used before (visible "canary" names until v1.7.4, Chinese ones before v1.3.0): deleted when the
+# monitor starts
+LEGACY_CANARY_NAMES = ["!!!_canary_do_not_delete.docx", "!!!_canary_do_not_delete.xlsx",
+                       "zzz_canary_do_not_delete.docx", "!!!_canary_勿刪.docx", "!!!_canary_勿刪.xlsx", "zzz_canary_勿刪.docx"]
 # what canary files contained before v1.6.1 (plain text, so Word and Excel called them corrupt); still
 # accepted as intact, and replaced by the current content when the monitor starts
 LEGACY_CANARY_BYTES = ((
@@ -443,13 +449,120 @@ def _load_json(name: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+# What the parts running with administrator rights act on - state.json (adapters and firewall settings to
+# restore, programs to resume), the canary record, the watched folders, the "stopped by the user" flag -
+# lives in a folder only administrators can change. In the user's app folder, any program running as the
+# user could have made "Restore network" turn the firewall off, or stopped monitoring.
+def state_dir() -> Path:
+    """C:\\ProgramData\\RansomGuard (not created here: see secure_state_dir)."""
+    return (Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "RansomGuard" if IS_WINDOWS else
+            app_dir() / "state")
+
+
+_state_secured = False
+STATE_FILES = ("state.json", "canaries.json", "watch.json", "monitor_stopped")
+
+
+def _is_link(p: Path) -> bool:
+    """A symbolic link or a directory junction (which Windows lets any user create)."""
+    return p.is_symlink() or bool(getattr(p, "is_junction", lambda: False)())
+
+
+def _remove_entry(p: Path):
+    if _is_link(p):
+        try:
+            os.rmdir(p)  # a link to a folder: removes the link only, never what it points to
+        except OSError:
+            os.unlink(p)
+    elif p.is_dir():
+        shutil.rmtree(p)  # doesn't follow links inside either
+    else:
+        p.unlink()
+
+
+def secure_state_dir():
+    """Hand the state folder to administrators: owned by Administrators, full control for SYSTEM and
+    Administrators, read-only for the user who runs RansomGuard (the health check reads state.json), nothing
+    inherited from ProgramData (where every user may create files and folders). Someone could have created it
+    first, so a link in its place and anything in it that isn't one of STATE_FILES is removed, and permissions
+    are set on the folder and those files only (never recursively: that could follow a link elsewhere).
+    Needs administrator rights; done once per run, by the parts that have them."""
+    global _state_secured
+    if _state_secured or not IS_WINDOWS:
+        return
+    d = state_dir()
+    if os.path.lexists(d) and _is_link(d):
+        _remove_entry(d)
+    d.mkdir(parents=True, exist_ok=True)
+    for entry in list(d.iterdir()):
+        if entry.name not in STATE_FILES or _is_link(entry) or not entry.is_file():
+            try:
+                _remove_entry(entry)
+            except OSError as ex:
+                log.warning(tr("無法移除 %s：%s", "Could not remove %s: %s"), entry, ex)
+    icacls, user = sys_exe("icacls.exe"), f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}"
+    files = [str(d / n) for n in STATE_FILES if (d / n).is_file()]
+    for path in [str(d), *files]:
+        _run([icacls, path, "/setowner", "*S-1-5-32-544", "/C", "/Q"])
+    _run([icacls, str(d), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F",
+          f"{user}:(OI)(CI)RX", "/Q"])
+    for path in files:  # they take the folder's permissions
+        _run([icacls, path, "/reset", "/C", "/Q"])
+    _state_secured = True
+
+
+def _read_state_json(path: Path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_FIREWALL_VALUES = {"Name": {"Domain", "Private", "Public"}, "Enabled": {"True", "False"},
+                    "In": {"Block", "Allow", "NotConfigured"}, "Out": {"Block", "Allow", "NotConfigured"}}
+
+
+def clean_state(st: dict) -> dict:
+    """Only well-formed entries of a state file. Whatever wrote it, restoring can then only enable network
+    adapters by name, put firewall profiles back to ordinary values and resume programs Defender finds clean."""
+    out = {}
+    if isinstance(st.get("triggered_at"), str):
+        out["triggered_at"] = st["triggered_at"][:40]
+    if isinstance(st.get("reminded"), (int, float)):
+        out["reminded"] = st["reminded"]
+    if isinstance(st.get("disabled_adapters"), list):
+        out["disabled_adapters"] = [n for n in st["disabled_adapters"] if isinstance(n, str) and 0 < len(n) <= 256]
+    if isinstance(st.get("firewall"), list):
+        out["firewall"] = [{k: str(p[k]) for k in _FIREWALL_VALUES} for p in st["firewall"] if isinstance(p, dict)
+                           and all(str(p.get(k)) in ok for k, ok in _FIREWALL_VALUES.items())]
+    if isinstance(st.get("paused"), list):
+        out["paused"] = [{"pid": p["pid"], "name": str(p.get("name", ""))[:260], "path": str(p.get("path", ""))[:1024],
+                          "paused": bool(p.get("paused")), "result": str(p.get("result", ""))[:100]}
+                         for p in st["paused"] if isinstance(p, dict) and isinstance(p.get("pid"), int)
+                         and not isinstance(p.get("pid"), bool) and p["pid"] > 0]
+    return out
+
+
 def load_state() -> dict:
-    return _load_json("state.json")
+    """The state, checked by clean_state(). A state file left in the user's app folder by versions before
+    1.7.5 is moved over (once, after the same check)."""
+    new, legacy = state_dir() / "state.json", app_dir() / "state.json"
+    if not new.exists() and legacy.exists() and norm(new) != norm(legacy):
+        st = clean_state(_read_state_json(legacy))
+        try:
+            save_state(st)
+            legacy.unlink()
+        except OSError:
+            pass
+        return st
+    return clean_state(_read_state_json(new))
 
 
 def save_state(st: dict):
-    (app_dir() / "state.json").write_text(
-        json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "state.json").write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_settings() -> dict:
@@ -537,7 +650,9 @@ def kernel32():
             ("Process32NextW", B, [H, ctypes.POINTER(_PROCESSENTRY32W)]),
             ("GetProcessIoCounters", B, [H, ctypes.POINTER(ctypes.c_uint64 * 6)]),
             ("GetProcessTimes", B, [H] + [ctypes.POINTER(ctypes.c_uint64)] * 4),
-            ("MoveFileExW", B, [S, S, D])):
+            ("MoveFileExW", B, [S, S, D]),
+            ("SetFileAttributesW", B, [S, D]),
+            ("GetTickCount64", ctypes.c_uint64, [])):
         fn = getattr(k32, name)
         fn.restype, fn.argtypes = res, args
     return k32
@@ -930,13 +1045,73 @@ def default_watch_dirs():
     return dirs
 
 
-def default_canary_dirs():
-    return [p for p in (_known_folder("Documents"), _known_folder("Pictures")) if p.is_dir()]
+# ---- folders the user added in the control panel (kept in the administrators-only state folder) ----
+def watch_problem(path) -> str:
+    """Why a folder can't be added to the watched folders ("" if it can). System folders and the whole system
+    drive would bring constant changes (slow, false alarms); a folder under a default one is watched already."""
+    p = norm(path)
+    if not os.path.isdir(p):
+        return tr("找不到這個資料夾", "This folder doesn't exist")
+    system_drive = os.environ.get("SystemDrive", "C:") + "\\"
+    if p == norm(system_drive):
+        return tr("不能監控整個系統磁碟，請選擇裡面的資料夾", "The whole system drive can't be watched; choose a folder in it")
+    for root in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "LOCALAPPDATA", "APPDATA"):
+        r = os.environ.get(root)
+        if r and (p == norm(r) or p.startswith(norm(r) + os.sep)):
+            return tr("系統或程式資料夾變動太頻繁，不能監控", "System and program folders change too often to be watched")
+    for d in default_watch_dirs():
+        if p == norm(d) or p.startswith(norm(d) + os.sep):
+            return tr("這個資料夾已經在監控中", "This folder is watched already")
+    return ""
+
+
+def extra_watch_dirs() -> list:
+    """The folders the user added that exist and may be watched."""
+    try:
+        dirs = json.loads((state_dir() / "watch.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [Path(d) for d in dirs if isinstance(d, str) and not watch_problem(d)] if isinstance(dirs, list) else []
+
+
+def save_extra_watch_dirs(dirs):
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "watch.json").write_text(json.dumps([str(p) for p in dirs], ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---- canary files ----
+def _canary_record_file() -> Path:
+    return state_dir() / "canaries.json"
+
+
+def canary_record() -> list:
+    """The canary files this program created (paths); only these may be rewritten or deleted."""
+    try:
+        paths = json.loads(_canary_record_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [p for p in paths if isinstance(p, str)] if isinstance(paths, list) else []
+
+
+def _set_hidden(path, hidden: bool):
+    if IS_WINDOWS:
+        kernel32().SetFileAttributesW(str(path), 0x2 if hidden else 0x80)  # HIDDEN / NORMAL
+
+
+def _write_canary(path: Path):
+    if path.exists():
+        _set_hidden(path, False)  # a hidden file can't be opened for overwriting
+    path.write_bytes(canary_bytes(path))
+    _set_hidden(path, True)
 
 
 def plant_canaries(dirs, upgrade=False):
-    """Create missing canary files and reset changed ones. upgrade: also replace the plain-text canary files of
-    versions before 1.6.1 (only when no other monitor can be watching them)."""
+    """Create missing canary files (hidden) in every folder and reset changed ones. A file with a canary's
+    name that this program didn't create and that isn't a canary is the user's own: it is left alone, and that
+    canary is skipped. upgrade: also replace the canary content of versions before 1.6.1 (only when no other
+    monitor can be watching them)."""
+    record = {norm(p): p for p in canary_record()}
     paths = []
     for d in dirs:
         for name in CANARY_NAMES:
@@ -944,6 +1119,9 @@ def plant_canaries(dirs, upgrade=False):
             try:
                 data = p.read_bytes() if p.exists() else None
                 if data is not None and not canary_intact(p, data):
+                    if norm(p) not in record:
+                        log.info(tr("略過誘餌檔：已經有同名的檔案 %s", "Canary skipped: a file of that name exists: %s"), p)
+                        continue
                     log.warning(tr("誘餌檔內容和預期不同（程式沒執行時被改過？）：%s",
                                    "Canary file content is not what was expected "
                                    "(changed while the program was not running?): %s"), p)
@@ -952,10 +1130,19 @@ def plant_canaries(dirs, upgrade=False):
                              f"A canary file was modified while the program was not running:\n{p}\n\n"
                              "Please check whether something is wrong with this computer."))
                 if data is None or not canary_intact(p, data) or (upgrade and data != canary_bytes(p)):
-                    p.write_bytes(canary_bytes(p))
+                    _write_canary(p)
+                else:
+                    _set_hidden(p, True)
+                record[norm(p)] = str(p)
                 paths.append(p)
             except OSError as ex:
                 log.warning(tr("無法建立誘餌檔 %s：%s", "Could not create canary file %s: %s"), p, ex)
+    try:
+        _canary_record_file().parent.mkdir(parents=True, exist_ok=True)
+        _canary_record_file().write_text(json.dumps(sorted(record.values()), ensure_ascii=False, indent=2),
+                                         encoding="utf-8")
+    except OSError as ex:  # test mode without administrator rights
+        log.warning(tr("無法記錄誘餌檔：%s", "Could not record the canary files: %s"), ex)
     return paths
 
 
@@ -1756,6 +1943,7 @@ def restore_network(report=print) -> bool:
         report(tr("需要以系統管理員身分執行才能恢復網路。",
                   "Administrator rights are needed to restore the network."))
         return False
+    secure_state_dir()
     st = load_state()
     if st.get("triggered_at"):
         report(tr(f"RansomGuard 在 {st['triggered_at']} 切斷了網路。",
@@ -1833,11 +2021,37 @@ def restore_network(report=print) -> bool:
     return ok
 
 
-def remove_canaries(names=CANARY_NAMES + LEGACY_CANARY_NAMES):
-    """Delete the canary files; the monitor creates fresh ones when it restarts (so they aren't
-    mistaken for "changed while the program was not running")."""
-    for d in default_canary_dirs():
-        for name in names:
+def remove_canaries(only_in=None):
+    """Delete the canary files this program recorded (only_in: just those inside these folders), and those of
+    older versions; the monitor creates fresh ones when it restarts (so they aren't mistaken for "changed
+    while the program was not running")."""
+    keep = []
+    for p in canary_record():
+        if os.path.basename(p) not in CANARY_NAMES:  # whatever the record says, only canary names are deleted
+            continue
+        if only_in is not None and not any(norm(p).startswith(norm(d) + os.sep) for d in only_in):
+            keep.append(p)
+            continue
+        try:
+            Path(p).unlink(missing_ok=True)  # works on hidden files too
+        except OSError as ex:
+            keep.append(p)
+            log.warning(tr("無法刪除誘餌檔 %s：%s", "Could not delete canary file %s: %s"), p, ex)
+    try:
+        if keep:
+            _canary_record_file().write_text(json.dumps(keep, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            _canary_record_file().unlink(missing_ok=True)
+    except OSError:
+        pass
+    if only_in is None:
+        remove_legacy_canaries()
+
+
+def remove_legacy_canaries():
+    """Delete the visible canary files of versions before 1.7.5 (Documents and Pictures)."""
+    for d in (_known_folder("Documents"), _known_folder("Pictures")):
+        for name in LEGACY_CANARY_NAMES:
             try:
                 (d / name).unlink(missing_ok=True)
             except OSError as ex:
@@ -1877,7 +2091,39 @@ def stop_monitor():
     log.info(tr("已停止背景監控", "Background monitoring stopped"))
 
 
+# The scheduled task also starts the monitor every few minutes when it isn't running (ransomware with
+# administrator rights often ends security programs first), so a stop the user asked for is written down,
+# in the folder only administrators can change, and holds until Windows restarts.
+MONITOR_RESTART_MINUTES = 5
+
+
+def boot_time() -> float:
+    """When Windows last started (seconds since the epoch)."""
+    return time.time() - kernel32().GetTickCount64() / 1000 if IS_WINDOWS else 0.0
+
+
+def stop_monitor_until_restart():
+    """The control panel's "Stop monitoring"."""
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "monitor_stopped").write_text(str(boot_time()), encoding="utf-8")
+    stop_monitor()
+
+
+def stopped_by_user() -> bool:
+    """The user stopped monitoring since Windows last started."""
+    try:
+        stopped_boot = float((state_dir() / "monitor_stopped").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return abs(stopped_boot - boot_time()) < 120
+
+
 def start_monitor() -> bool:
+    try:
+        (state_dir() / "monitor_stopped").unlink(missing_ok=True)
+    except OSError:
+        pass
     _ps(f"Start-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -ErrorAction Stop")
     time.sleep(5)  # a failed start (e.g. a missing package) exits within a few seconds
     return task_state() == "Running"
@@ -2060,6 +2306,7 @@ var env = sh.Environment("PROCESS");
 var test = env("RG_HEALTH_TEST") != "";  // tests: print the result instead of asking
 if (test && env("RG_HEALTH_TASK") != "") TASK = env("RG_HEALTH_TASK");
 var appDir = (test && env("RG_HEALTH_APPDIR") != "") ? env("RG_HEALTH_APPDIR") : env("LOCALAPPDATA") + "\\RansomGuard";
+var stateDir = (test && env("RG_HEALTH_STATE") != "") ? env("RG_HEALTH_STATE") : env("ProgramData") + "\\RansomGuard";
 
 function readText(path) {
     try {
@@ -2086,7 +2333,7 @@ function check() {
         if (task.State == 4) return "";  // running
     } catch (e) { return ""; }
     // after a trigger the monitor stops on purpose, until the network is restored
-    if (/"triggered_at"\s*:\s*"[^"]/.test(readText(appDir + "\\state.json"))) return "";
+    if (/"triggered_at"\s*:\s*"[^"]/.test(readText(stateDir + "\\state.json"))) return "";
     return "stopped";
 }
 
@@ -2150,6 +2397,7 @@ def install_health_check(report):
 
 def _install(report, update=True) -> bool:
     global UPDATED_TO
+    secure_state_dir()
     UPDATED_TO = fetch_update(report) if FROZEN and update else None
     if update and not FROZEN:
         report(tr("從原始碼執行時，請用 git pull 更新程式碼。", "Running from source: update the code with git pull."))
@@ -2166,11 +2414,16 @@ def _install(report, update=True) -> bool:
         f"$a = New-ScheduledTaskAction -Execute {_ps_quote(exe)} "
         f"-Argument {_ps_quote((args + ' --monitor').strip())} -WorkingDirectory {_ps_quote(workdir)}; "
         "$t = New-ScheduledTaskTrigger -AtLogOn -User $u; "
+        # also every few minutes: starts the monitor again if something ended it (MultipleInstances IgnoreNew
+        # leaves a running monitor alone); the repetition never expires
+        "$t2 = New-ScheduledTaskTrigger -Once -At (Get-Date) "
+        f"-RepetitionInterval (New-TimeSpan -Minutes {MONITOR_RESTART_MINUTES}); "
+        "$t2.Repetition.StopAtDurationEnd = $false; "  # never end the running monitor because of this trigger
         "$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; "
         "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
         "-ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew "
         "-RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); "
-        f"Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $a -Trigger $t "
+        f"Register-ScheduledTask -TaskName {_ps_quote(TASK_NAME)} -Action $a -Trigger $t, $t2 "
         f"-Principal $p -Settings $s "
         f"-Description {_ps_quote(tr('偵測勒索病毒行為並自動切斷網路', 'Detects ransomware behavior and cuts off the network automatically'))} "  # noqa: E501
         "-Force -ErrorAction Stop | Out-Null")
@@ -2250,6 +2503,13 @@ def remove_app_data(report):
     shutil.rmtree(folder, ignore_errors=True)
     report(tr(f"已刪除紀錄檔與設定（{folder}）", f"Deleted the log and settings ({folder})") if not folder.exists() else
            tr(f"  有些檔案仍在使用中，沒有刪除：{folder}", f"  Some files are still in use and were not deleted: {folder}"))
+    state = state_dir()
+    if os.path.lexists(state) and norm(state) != norm(folder):
+        try:
+            _remove_entry(state)  # the network state, canary record and watched folders
+            report(tr(f"已刪除狀態資料（{state}）", f"Deleted the state data ({state})"))
+        except OSError as ex:
+            report(tr(f"  無法刪除 {state}：{ex}", f"  Could not delete {state}: {ex}"))
 
 
 UPDATE_CHECK_DELAY = 120           # first update check this many seconds after the monitor starts
@@ -2349,7 +2609,7 @@ def set_window_icons(root, source: str):
 def gui(auto_update=False):
     import queue
     import tkinter as tk
-    from tkinter import messagebox, scrolledtext
+    from tkinter import filedialog, messagebox, scrolledtext
 
     if IS_WINDOWS and not is_admin():  # reopen as administrator
         script = [] if FROZEN else [os.path.abspath(__file__)]
@@ -2366,6 +2626,7 @@ def gui(auto_update=False):
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("leo-code-del.RansomGuard")
     except Exception:
         pass
+    secure_state_dir()  # the control panel runs with administrator rights, like the monitor
 
     root = tk.Tk()
     root.resizable(False, False)
@@ -2388,6 +2649,7 @@ def gui(auto_update=False):
               "success": ("#16a34a", "#15803d", "#ffffff", "#bde5cb"),
               "secondary": ("#ffffff", "#eef1f6", C["text"], "#c3c9d4"),
               "danger": (C["bg"], "#fde8e8", C["bad"], "#e8b4b4"),
+              "link": (C["bg"], "#e8ecf3", C["text"], "#c3c9d4"),
               "header": (C["header"], "#334155", "#cbd5e1", "#64748b")}
     root.configure(bg=C["bg"])
 
@@ -2395,12 +2657,14 @@ def gui(auto_update=False):
     buttons = []
     w = {}  # widgets on screen now; the whole window is rebuilt when the language changes
 
-    def make_button(parent, text, cmd, name, tip_text=None):
+    def make_button(parent, text, cmd, name, tip_text=None, track=True):
+        """track: disable it while an action runs (not for buttons of a dialog, which may be gone by then)."""
         rim = tk.Frame(parent)  # 1px border (a tk button's own border can only be black on Windows)
         b = tk.Button(rim, text=text, command=cmd, font=(w["font"], 11), relief="flat", bd=0,
                       highlightthickness=0, cursor="hand2", padx=px(12), pady=px(7))
         b.pack(fill="both", padx=1, pady=1)
-        buttons.append(b)
+        if track:
+            buttons.append(b)
 
         # bound once and reading the current style, so restyling (show_status) doesn't stack handlers
         def enter(_):
@@ -2560,10 +2824,12 @@ def gui(auto_update=False):
 
     def on_stop():
         if messagebox.askyesno(tr("停止監控", "Stop monitoring"),
-                               tr("停止後電腦就沒有勒索病毒防護，直到重新開啟監控或下次登入。\n確定要停止嗎？",
-                                  "This computer will have no ransomware protection until monitoring "
-                                  "is restarted or you sign in again.\nStop monitoring?")):
-            run_bg(lambda rep: (stop_monitor(), rep(tr("監控已停止。", "Monitoring stopped."))))
+                               tr("停止後電腦就沒有勒索病毒防護，直到你按「安裝並開始監控」或重新開機。\n確定要停止嗎？",
+                                  "This computer will have no ransomware protection until you click \"Install "
+                                  "and start monitoring\" or restart Windows.\nStop monitoring?")):
+            run_bg(lambda rep: (stop_monitor_until_restart(),
+                                rep(tr("監控已停止，重新開機後會自動再啟動。",
+                                       "Monitoring stopped. It starts again by itself when Windows restarts."))))
 
     def on_uninstall():
         title = tr("解除安裝", "Uninstall")
@@ -2590,6 +2856,81 @@ def gui(auto_update=False):
             os.startfile(p)
         else:
             messagebox.showinfo(tr("紀錄檔", "Log"), tr("還沒有紀錄檔。", "There is no log file yet."))
+
+    def on_watch_folders():
+        """Dialog: the folders watched besides the default ones (another drive, a USB drive, a NAS...)."""
+        title = tr("監控的資料夾", "Watched folders")
+        F = w["font"]
+        dlg = tk.Toplevel(root)
+        dlg.title(title)
+        dlg.configure(bg=C["bg"])
+        dlg.resizable(False, False)
+        dlg.transient(root)
+        pad = tk.Frame(dlg, bg=C["bg"])
+        pad.pack(fill="both", padx=px(20), pady=px(16))
+
+        def label(text, bold=False, muted=False, gap=(0, 0)):
+            tk.Label(pad, text=text, font=(F, 10, "bold") if bold else (F, 9), fg=C["muted"] if muted else C["text"],
+                     bg=C["bg"], justify="left", wraplength=px(440)).pack(anchor="w", pady=gap)
+        label(tr("一律監控", "Always watched"), bold=True)
+        label("\n".join(str(d) for d in default_watch_dirs()), gap=(px(2), px(12)))
+        label(tr("另外監控的資料夾（例如 D 槽、隨身碟、NAS）", "Also watched (e.g. another drive, a USB drive, a NAS)"),
+              bold=True)
+        lb = tk.Listbox(pad, font=(F, 10), height=6, width=54, relief="flat", bd=0, highlightthickness=1,
+                        highlightbackground=C["border"], activestyle="none", selectbackground="#dbeafe",
+                        selectforeground=C["text"])
+        lb.pack(fill="x", pady=(px(4), px(8)))
+        for d in extra_watch_dirs():
+            lb.insert("end", str(d))
+
+        def add():
+            path = filedialog.askdirectory(parent=dlg, title=title, mustexist=True)
+            if not path:
+                return
+            path = os.path.normpath(path)
+            problem = watch_problem(path)
+            if problem:
+                messagebox.showwarning(title, f"{path}\n\n{problem}", parent=dlg)
+            elif norm(path) not in {norm(p) for p in lb.get(0, "end")}:
+                lb.insert("end", path)
+
+        def remove():
+            for i in reversed(lb.curselection()):
+                lb.delete(i)
+        row = tk.Frame(pad, bg=C["bg"])
+        row.pack(fill="x")
+        make_button(row, tr("新增資料夾…", "Add folder…"), add, "secondary", track=False)[0].pack(side="left")
+        make_button(row, tr("移除", "Remove"), remove, "secondary", track=False)[0].pack(side="left", padx=(px(6), 0))
+        label(tr("每個監控的資料夾都會放入隱藏的誘餌檔。儲存後背景監控會重新啟動。",
+                 "Each watched folder gets hidden canary files. Saving restarts background monitoring."),
+              muted=True, gap=(px(12), px(10)))
+
+        def save():
+            new = [Path(p) for p in lb.get(0, "end")]
+            removed = [d for d in extra_watch_dirs() if norm(d) not in {norm(n) for n in new}]
+            dlg.destroy()
+
+            def work(rep):
+                save_extra_watch_dirs(new)
+                rep(tr(f"已儲存，另外監控 {len(new)} 個資料夾。", f"Saved: {len(new)} more folder(s) watched."))
+                installed = bool(task_state())
+                if installed:
+                    stop_monitor()  # before its canaries go, or removing them would trigger it
+                if removed:
+                    remove_canaries(only_in=removed)
+                if installed:
+                    rep(tr("  監控已重新啟動", "  Monitoring restarted") if start_monitor() else
+                        tr("  監控沒有正常啟動，請按「安裝並開始監控」", "  Monitoring did not start. Click \"Install "
+                           "and start monitoring\""))
+            run_bg(work)
+        bottom = tk.Frame(pad, bg=C["bg"])
+        bottom.pack(fill="x")
+        make_button(bottom, tr("儲存", "Save"), save, "primary", track=False)[0].pack(side="right")
+        make_button(bottom, tr("取消", "Cancel"), dlg.destroy, "secondary", track=False)[0].pack(
+            side="right", padx=(0, px(6)))
+        dlg.update_idletasks()
+        dlg.geometry(f"+{root.winfo_rootx() + px(30)}+{root.winfo_rooty() + px(60)}")
+        dlg.grab_set()
 
     def on_auto_update():
         if w["auto"].get() and not messagebox.askyesno(
@@ -2774,8 +3115,8 @@ def gui(auto_update=False):
               tr("用目前這個版本安裝並開始背景監控，不會連網。",
                  "Installs background monitoring with this version and starts it. Doesn't connect to the internet.")),
              ("stop", tr("停止監控", "Stop monitoring"), on_stop,
-              tr("暫時停止背景監控，下次登入 Windows 時會自動再啟動。",
-                 "Stops background monitoring for now; it starts again when you next sign in to Windows."))],
+              tr("暫時停止背景監控，重新開機後會自動再啟動。",
+                 "Stops background monitoring for now; it starts again when Windows restarts."))],
             [("restore", tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore,
               tr("誤判時使用：重新啟用網路、恢復 Defender 確認沒問題的被暫停程式，並重新開始監控。",
                  "After a false alarm: turns the network back on, resumes paused programs Defender finds clean "
@@ -2815,6 +3156,11 @@ def gui(auto_update=False):
                             activebackground=C["bg"], selectcolor=C["card"], highlightthickness=0, bd=0,
                             cursor="hand2")
         cb.pack(side="left")
+        rim, b = make_button(foot, tr("監控的資料夾…", "Watched folders…"), on_watch_folders, "link",
+                             tr("加入其他要監控的資料夾，例如 D 槽、隨身碟或 NAS。", "Add more folders to watch, such as "
+                                "another drive, a USB drive or a NAS."))
+        b.config(font=(FONT, 10), padx=px(8), pady=px(4))
+        rim.pack(side="left", padx=(px(10), 0))
         tip(cb, tr("開啟後，每 6 小時以及開啟控制台時會連到 GitHub 檢查新版本（GitHub 會看到這台電腦的 IP 位址）。預設關閉。",
                    "When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel "
                    "opens (GitHub sees this computer's IP address). Off by default."))
@@ -2864,7 +3210,8 @@ def respond(reason: str, dry_run: bool):
     return proc
 
 
-def run(args):
+def run(args, stop=None):
+    """The monitor. stop: an Event that ends it (tests); it otherwise runs until Windows ends it."""
     exit_with_launcher()
     try:
         from watchdog.observers import Observer
@@ -2885,26 +3232,34 @@ def run(args):
     if not args.dry_run and not single_instance():
         log.info(tr("已經有監控在執行，這次不再啟動", "Monitoring is already running; not starting again"))
         sys.exit(0)
-    if not args.dry_run:  # safe now: no other monitor is watching the old canary files
-        remove_canaries(LEGACY_CANARY_NAMES)
+    if not args.dry_run:
+        secure_state_dir()
+        if stopped_by_user():  # the task's every-few-minutes trigger must not undo "Stop monitoring"
+            log.info(tr("使用者已停止監控，重新開機前不會自動啟動", "Monitoring was stopped by the user; "
+                        "it doesn't start by itself until Windows restarts"))
+            sys.exit(0)
+        remove_legacy_canaries()  # safe now: no other monitor is watching the old canary files
         cleanup_old_files()
 
     st = load_state()
-    if st.get("triggered_at"):
+    if st.get("triggered_at") and not args.dry_run and abs(st.get("reminded", 0) - boot_time()) > 120:
+        # once per Windows start: the task may start the monitor again every few minutes
+        st["reminded"] = boot_time()
+        save_state(st)
         alert(tr("RansomGuard 提醒", "RansomGuard reminder"),
               tr(f"上次在 {st['triggered_at']} 偵測到疑似勒索病毒並切斷了網路。\n"
                  f"確認電腦安全後，{restore_hint()}。",
                  f"Possible ransomware was detected at {st['triggered_at']} and the network was cut off.\n"
                  f"Once you're sure the computer is safe, {restore_hint()}."))
 
-    watch_dirs = [Path(p) for p in args.watch] if args.watch else default_watch_dirs()
+    watch_dirs = [Path(p) for p in args.watch] if args.watch else default_watch_dirs() + extra_watch_dirs()
     watch_dirs = [d for d in watch_dirs if d.is_dir()]
     if not watch_dirs:
         log.error(tr("沒有可監控的資料夾", "No folders to watch"))
         sys.exit(1)
-    canaries = plant_canaries(watch_dirs if args.watch else default_canary_dirs(), upgrade=not args.dry_run)
+    canaries = plant_canaries(watch_dirs, upgrade=not args.dry_run)
 
-    stop = threading.Event()
+    stop = stop or threading.Event()
 
     def on_trigger(reason):
         proc = respond(reason, args.dry_run)
@@ -2917,8 +3272,8 @@ def run(args):
                               proc.returncode)
                     alert(tr("RansomGuard：偵測到疑似勒索病毒，網路已切斷",
                              "RansomGuard: possible ransomware detected, network cut off"), reason)
-                    time.sleep(60)
-            stop.set()
+            # monitoring goes on (it doesn't trigger a second time): dangerous commands are still stopped and
+            # the programs behind them paused while the network is cut
 
     scanner = None
     if DEFENDER_SCAN_DOWNLOADS and IS_WINDOWS and MPCMDRUN.is_file():
@@ -2941,7 +3296,7 @@ def run(args):
         procmon.start()
     if FROZEN and not args.dry_run:
         threading.Thread(target=update_watcher, args=(stop,), daemon=True).start()
-    restarts = 0
+    restarts, restarts_since = 0, time.time()
 
     log.info(tr("RansomGuard %s 開始監控%s：%s", "RansomGuard %s started monitoring%s: %s"), VERSION,
              tr("（測試模式）", " (test mode)") if args.dry_run else "",
@@ -2957,7 +3312,10 @@ def run(args):
             if last - pruned > 86400:  # the monitor can run for weeks: keep the log to LOG_KEEP_DAYS anyway
                 pruned = last
                 prune_own_log()
-            # restart a monitor component that stopped unexpectedly (e.g. a watched folder vanished), up to 10 times
+            # restart a monitor component that stopped unexpectedly (e.g. a watched USB drive was unplugged), up
+            # to 10 times an hour, so a crash loop doesn't spin but a drive coming and going isn't fatal either
+            if last - restarts_since > 3600:
+                restarts, restarts_since = 0, last
             if restarts < 10 and not observer.is_alive():
                 restarts += 1
                 log.error(tr("檔案監控意外停止，重新啟動（第 %d 次）",

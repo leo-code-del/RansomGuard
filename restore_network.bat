@@ -10,12 +10,20 @@ exit /b
 # ===== PowerShell below: restore a network that RansomGuard cut off =====
 $ErrorActionPreference = 'Continue'
 $TaskName  = 'RansomGuard'
-$StateFile = Join-Path $env:LOCALAPPDATA 'RansomGuard\state.json'
-# Current canary file names, plus the names used before v1.3.0
-$Canaries  = @('!!!_canary_do_not_delete.docx', '!!!_canary_do_not_delete.xlsx', 'zzz_canary_do_not_delete.docx',
-               ('!!!_canary_' + [char]0x52FF + [char]0x522A + '.docx'),
-               ('!!!_canary_' + [char]0x52FF + [char]0x522A + '.xlsx'),
-               ('zzz_canary_' + [char]0x52FF + [char]0x522A + '.docx'))
+# State lives where only administrators can change it (since 1.7.5); older versions kept it in the user folder
+$StateDir  = Join-Path $env:ProgramData 'RansomGuard'
+$StateFile = Join-Path $StateDir 'state.json'
+$OldState  = Join-Path $env:LOCALAPPDATA 'RansomGuard\state.json'
+if (-not (Test-Path $StateFile) -and (Test-Path $OldState)) { $StateFile = $OldState }
+# Canary files RansomGuard recorded (since 1.7.5), plus the visible names older versions used
+$Record    = Join-Path $StateDir 'canaries.json'
+$OldCanaries = @('!!!_canary_do_not_delete.docx', '!!!_canary_do_not_delete.xlsx', 'zzz_canary_do_not_delete.docx',
+                 ('!!!_canary_' + [char]0x52FF + [char]0x522A + '.docx'),
+                 ('!!!_canary_' + [char]0x52FF + [char]0x522A + '.xlsx'),
+                 ('zzz_canary_' + [char]0x52FF + [char]0x522A + '.docx'))
+# The only firewall values put back, whatever the state file says
+$FirewallOk = @{ Name = @('Domain', 'Private', 'Public'); Enabled = @('True', 'False');
+                 In = @('Block', 'Allow', 'NotConfigured'); Out = @('Block', 'Allow', 'NotConfigured') }
 
 function Done($code) { Write-Host ''; Read-Host 'Press Enter to close' | Out-Null; exit $code }
 
@@ -62,6 +70,8 @@ try {
     # If the firewall was used to block the network, put its original settings back
     if ($st -and $st.firewall) {
         foreach ($p in @($st.firewall)) {
+            $bad = @($FirewallOk.Keys | Where-Object { $FirewallOk[$_] -notcontains "$($p.$_)" })
+            if ($bad.Count -gt 0) { Write-Host "      Skipped firewall settings with unexpected values" -ForegroundColor Yellow; continue }
             try {
                 Set-NetFirewallProfile -Name $p.Name -Enabled $p.Enabled -DefaultInboundAction $p.In -DefaultOutboundAction $p.Out -ErrorAction Stop
                 Write-Host "      Restored firewall settings for $($p.Name)"
@@ -74,9 +84,17 @@ try {
     & "$env:SystemRoot\System32\ipconfig.exe" /renew | Out-Null
 
     Write-Host '[2/3] Clearing the trigger record and resetting canary files...'
-    if (Test-Path $StateFile) { Remove-Item $StateFile -Force }
+    foreach ($f in @($StateFile, $OldState)) { if (Test-Path $f) { Remove-Item $f -Force } }
+    if (Test-Path $Record) {
+        $names = @('0000 Scan index.docx', 'Household budget.xlsx', 'ZZ Archive notes.docx')  # CANARY_NAMES
+        try { foreach ($p in @(Get-Content $Record -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+            # only files with a canary's name, whatever the record says; -Force: they are hidden
+            if ($p -and ($names -contains (Split-Path $p -Leaf)) -and (Test-Path -LiteralPath $p)) { Remove-Item -LiteralPath $p -Force }
+        } } catch { }
+        Remove-Item $Record -Force
+    }
     foreach ($d in @([Environment]::GetFolderPath('MyDocuments'), [Environment]::GetFolderPath('MyPictures'))) {
-        foreach ($n in $Canaries) {
+        foreach ($n in $OldCanaries) {
             $p = Join-Path $d $n
             if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
         }

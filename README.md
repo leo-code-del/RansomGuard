@@ -49,18 +49,18 @@ Any one of these triggers it:
 
 | Detection | What triggers it |
 | --- | --- |
-| **Canary files** | A few files such as `!!!_canary_do_not_delete.docx` in Documents and Pictures are modified, moved or deleted |
+| **Canary files** | Hidden decoy documents in every watched folder are modified, moved or deleted. They have ordinary-looking names, so ransomware that skips obvious decoys still reaches them |
 | **Broken files** | Within a short time, several .docx / .pdf / .jpg / .mp4 files get corrupted headers, or text files turn into what looks like encrypted data |
 | **Unknown extensions** | Many files are renamed within a short time, e.g. `report.docx` → `report.docx.locked` |
 | **Ransom notes** | Files such as `HOW_TO_DECRYPT.txt` appear in several folders within a short time |
 | **Dangerous commands** | A program deletes restore points, disables boot recovery, deletes backups, clears event logs or turns off Defender. The command is ended immediately and the program that started it is paused, because ransomware usually does this just before it starts encrypting |
 
-**Watched folders:** Desktop, Documents, Pictures, Downloads, Videos, Music.
+**Watched folders:** Desktop, Documents, Pictures, Downloads, Videos, Music, plus any folder you add with **Watched folders…** at the bottom of the control panel (another drive, a USB drive, a NAS). System folders and the whole system drive can't be added: they change all the time.
 
 **Downloads are checked too:** new programs, scripts and archives (`.exe`, `.msi`, `.js`, `.zip`...) in Downloads or directly on the Desktop are scanned with Microsoft Defender once they finish downloading. If Defender finds a threat, a message tells you. This doesn't cut the network, because Defender removes the file.
 
 > [!WARNING]
-> Don't modify, move or delete the canary files (names containing `canary_do_not_delete`): that cuts the network. Opening one in Word or Excel shows a notice explaining this. Close it without saving; Word and Excel suggest opening it read-only.
+> The canary files are hidden: `0000 Scan index.docx`, `Household budget.xlsx` and `ZZ Archive notes.docx` in each watched folder. You won't see them unless Explorer shows hidden files. Don't modify, move or delete them: that cuts the network. Opening one in Word or Excel shows a notice explaining this; close it without saving. If you already have a file of your own with one of these names, RansomGuard leaves it alone and skips that canary.
 
 ## When it triggers
 
@@ -85,14 +85,15 @@ The buttons are in two groups. Rest the mouse on a button to see what it does. O
 | | Button | What it does |
 | --- | --- | --- |
 | **Protection** | **Install and start monitoring** | Installs background monitoring with the version that is running and starts it, without contacting GitHub |
-| | **Stop monitoring** | Stops it for now; it starts again at the next sign-in |
+| | **Stop monitoring** | Stops it until you click **Install and start monitoring** or restart Windows |
 | | **Restore network and restart monitoring** | Restores the network after a false alarm |
 | **Tools** | **Check for updates** | Asks GitHub whether there is a newer version and tells you; if there is, asks whether to update |
 | | **Preview warning** | Shows what the warning looks like, without cutting the network |
 | | **Open log** | Opens `%LOCALAPPDATA%\RansomGuard\guard.log` (entries older than 30 days are removed) |
 | | **Clear log** | Empties the log, which lists the files and programs that were detected |
 | **Bottom** | **Check for updates automatically** | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
-| | **Uninstall** | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder and the log and settings |
+| | **Watched folders…** | Adds or removes folders watched besides the default ones. Saving restarts background monitoring |
+| | **Uninstall** | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder, the log and settings and the state data |
 | **Top right** | **English / 中文(繁體)** | Switches the interface language |
 
 The **Progress** box shows what the button you clicked is doing. The first time you open the control panel, you choose the language; the background monitor's warnings use the same language.
@@ -133,15 +134,16 @@ RansomGuard.exe asks for administrator rights (User Account Control) when it sta
 
 ### What it reads
 
-- **Files** that change in Desktop, Documents, Pictures, Downloads, Videos and Music. For common formats (Office files, PDF, pictures, videos, text files) only the first 16 KB, to check whether the file looks encrypted. OneDrive files that are not downloaded yet are skipped. Other drives and network drives are not read, unless you add them with `--watch`.
+- **Files** that change in Desktop, Documents, Pictures, Downloads, Videos and Music. For common formats (Office files, PDF, pictures, videos, text files) only the first 16 KB, to check whether the file looks encrypted. OneDrive files that are not downloaded yet are skipped. Other drives and network drives are not read, unless you add them with **Watched folders…** (or `--watch`).
 - **Programs:** the command line of every program that starts, to spot the dangerous commands listed above; only those are written to the log. When it triggers, it also reads how much each running program has written.
 
 ### What it creates or changes
 
 | Where | What |
 | --- | --- |
-| Documents and Pictures (or the folders given with `--watch`) | Three canary files in each (`!!!_canary_do_not_delete.docx` and similar) |
-| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `state.json` (what was cut off or paused), `settings.json` (language, automatic update checks) |
+| Every watched folder | Three hidden canary files (`0000 Scan index.docx`, `Household budget.xlsx`, `ZZ Archive notes.docx`) |
+| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `settings.json` (language, automatic update checks) |
+| `C:\ProgramData\RansomGuard\` | `state.json` (what was cut off or paused), `canaries.json` (which canary files it created), `watch.json` (folders you added), `monitor_stopped` (when you stopped monitoring). Only administrators can change this folder; your account can read it |
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`, `icon.ico`, `health_check.js` |
 | `%TEMP%` | A `_MEI…` folder the exe unpacks itself into while it runs, removed when it exits. `MpCmdRun.log`, the log Microsoft Defender's scanner keeps of the scans RansomGuard asks for |
 | Desktop | The "RansomGuard" shortcut |
@@ -150,12 +152,12 @@ RansomGuard.exe asks for administrator rights (User Account Control) when it sta
 
 ### What it deletes
 
-It never deletes your own files, with two exceptions listed under [Things that can go wrong](#things-that-can-go-wrong): a file of yours named exactly like a canary file, and anything you put into `C:\Program Files\RansomGuard`. Otherwise it deletes only what it created:
+It never deletes your own files, with one exception listed under [Things that can go wrong](#things-that-can-go-wrong): anything you put into `C:\Program Files\RansomGuard`. Otherwise it deletes only what it created:
 
-- its canary files, when the network is restored and on uninstall;
+- its canary files (only the ones it recorded creating), when the network is restored, when you remove a folder from the watched folders, and on uninstall;
 - files left by older versions;
 - log entries older than 30 days, and the log when you click **Clear log**;
-- on uninstall: the desktop shortcut, both scheduled tasks, the `C:\Program Files\RansomGuard` folder and its own log and settings in `%LOCALAPPDATA%\RansomGuard`.
+- on uninstall: the desktop shortcut, both scheduled tasks, the `C:\Program Files\RansomGuard` folder, its own log and settings in `%LOCALAPPDATA%\RansomGuard` and its state data in `C:\ProgramData\RansomGuard`.
 
 ### Programs and the network
 
@@ -223,13 +225,13 @@ Keep using antivirus software (such as Microsoft Defender), install Windows upda
 ### What it can't do
 
 - It is not antivirus software. It doesn't recognize malware; it only reacts to behavior that looks like encryption.
-- It watches only Desktop, Documents, Pictures, Downloads, Videos and Music. Files on other drives, network drives and cloud folders outside these are not protected, unless you add them with `--watch`.
+- It watches only Desktop, Documents, Pictures, Downloads, Videos and Music. Files on other drives, network drives and cloud folders outside these are not protected, unless you add them with **Watched folders…**.
 - Some files are lost before it reacts. It triggers after about 8 to 10 files look encrypted within 30 seconds (or when a canary file is touched), and Windows reports file changes with a delay of about one second.
 - Ransomware that encrypts slowly enough to stay under these thresholds is caught only if it touches a canary file. So is ransomware that keeps each file's name and leaves its first bytes intact.
 - Ransomware that deletes restore points through Windows programming interfaces, instead of running commands such as `vssadmin`, is not caught by the dangerous-command check.
 - Programs that write through memory-mapped files don't show up in the write counts, so they may not be found to be paused.
-- Ransomware that already has administrator rights can stop RansomGuard or delete its scheduled task. The health check tells you within a day.
-- After it triggers and you close the warning, monitoring stays off until you restore the network or sign in to Windows again. If you sign in again before restoring the network, it reminds you that the network was cut and starts monitoring again.
+- Ransomware that already has administrator rights can stop RansomGuard. The scheduled task starts it again within 5 minutes; if the ransomware deletes the task too, the health check tells you within a day.
+- After it triggers, it doesn't trigger a second time until you restore the network, but it keeps stopping dangerous commands and pausing the programs behind them.
 - It has been tested with automated tests and simulated ransomware (files encrypted and renamed by a test script), never with real ransomware.
 - Windows 10 and 11 only, and it needs administrator rights.
 
@@ -240,14 +242,12 @@ Keep using antivirus software (such as Microsoft Defender), install Windows upda
 - **Normal programs can be paused by a false alarm.** Editors, browsers and OneDrive write all the time and may be paused (and freeze) until you restore the network from the control panel. If you restore with `restore_network.bat` instead, they stay paused until the computer restarts.
 - **You won't hear about new versions unless you ask.** Automatic update checks are off by default for privacy, so improvements and fixes reach you only if you click **Check for updates** now and then, or turn on **Check for updates automatically**.
 - **Uninstalling deletes the whole `C:\Program Files\RansomGuard` folder**, including any files you put there yourself.
-- A file of your own named exactly like a canary file (e.g. `!!!_canary_do_not_delete.docx`) in Documents or Pictures is replaced by the canary file.
 
 ### Known security issues
 
 These are removed from this list once fixed.
 
 - **Running from Python source can give malware administrator rights.** `install_ransom_guard.bat` and `ransom_guard.py --install` make the scheduled task run `ransom_guard.py` from the folder it is in, with administrator rights. If that folder can be changed without administrator rights (for example a folder on D: or in your user folder), any program running as you could change the script and get administrator rights at your next sign-in. The exe doesn't have this problem: it copies itself to `C:\Program Files\RansomGuard`, which only administrators can change. If you run from source, keep the project in a folder only administrators can change.
-- **Settings in your user folder steer actions taken with administrator rights.** `state.json` lives in `%LOCALAPPDATA%\RansomGuard`, which any program running as you can change. When you restore the network, the firewall settings saved there are put back with administrator rights, so a malicious program could use it to turn the firewall off at that moment. It could also make the health check stay quiet about stopped monitoring.
 - **Updates are checked only against GitHub.** The SHA-256 that an update is checked against comes from GitHub too, so it protects against damaged downloads but not against a compromised GitHub account. The built-in updater doesn't check the attestation either; you can check it yourself (see [Verify the download](#verify-the-download)). The exe is not code-signed, which is also why SmartScreen and Defender sometimes distrust it.
 
 ## How it is developed

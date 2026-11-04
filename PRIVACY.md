@@ -15,11 +15,14 @@ This page describes what personal data RansomGuard handles. It is written with t
 | What | Where | Contains | How long |
 | --- | --- | --- | --- |
 | Log | `%LOCALAPPDATA%\RansomGuard\guard.log` (and `.1` to `.3`) | Times, names of files that looked encrypted, programs that were stopped or paused (with their command lines), what RansomGuard did. File and folder names can include your Windows user name or other personal details | Entries older than 30 days are removed when RansomGuard starts and daily while it monitors; at most 4 MB in all |
-| State | `%LOCALAPPDATA%\RansomGuard\state.json` | When the network was cut, which network adapters and firewall settings to restore, which programs were paused | Until the network is restored |
+| State | `C:\ProgramData\RansomGuard\state.json` | When the network was cut, which network adapters and firewall settings to restore, which programs were paused | Until the network is restored |
+| Canary record, watched folders, stop flag | `C:\ProgramData\RansomGuard\` (`canaries.json`, `watch.json`, `monitor_stopped`) | Paths of the canary files it created and of the folders you added; when you stopped monitoring | Until uninstall |
 | Settings | `%LOCALAPPDATA%\RansomGuard\settings.json` | Interface language, whether automatic update checks are on | Until uninstall |
-| Canary files | Documents and Pictures | A fixed text explaining what the file is; nothing about you | Until uninstall |
+| Canary files | Every watched folder (hidden) | A fixed text explaining what the file is; nothing about you | Until uninstall |
 
-**Deleting it:** the control panel's **Clear log** button empties the log. **Uninstall** deletes the whole `%LOCALAPPDATA%\RansomGuard` folder, the canary files and everything RansomGuard installed. You can also delete these files yourself; RansomGuard recreates what it needs.
+`C:\ProgramData\RansomGuard` can be changed only by administrators, so no program running as you can tamper with what RansomGuard does with administrator rights. Your own account can read it.
+
+**Deleting it:** the control panel's **Clear log** button empties the log. **Uninstall** deletes `%LOCALAPPDATA%\RansomGuard`, `C:\ProgramData\RansomGuard`, the canary files and everything RansomGuard installed. You can also delete these files yourself (`C:\ProgramData\RansomGuard` needs administrator rights); RansomGuard recreates what it needs.
 
 RansomGuard reads the first 16 KB of files that change in your watched folders to tell whether they look encrypted. What it reads is only compared in memory and never stored, except the file's name in the log when a file looks encrypted.
 

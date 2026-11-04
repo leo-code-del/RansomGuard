@@ -33,7 +33,8 @@ rg.log.addHandler(logging.NullHandler())
 rg.log.propagate = False
 rg.init_lang("en")
 
-REAL = {name: getattr(rg, name) for name in ("fullscreen_alert", "set_paused", "_known_folder")}
+REAL = {name: getattr(rg, name) for name in ("fullscreen_alert", "set_paused", "_known_folder", "state_dir",
+                                              "secure_state_dir")}
 SANDBOX = Path(tempfile.mkdtemp(prefix="rg_sandbox_"))
 TEST_PID = os.getpid()  # saved now: some tests replace os.getpid
 # the interpreter itself; in a venv, sys.executable is a small launcher that starts this as a child process
@@ -87,6 +88,10 @@ def setUpModule():
             ("_run", forbidden("system commands (ipconfig, netsh, shutdown)")),
             ("fullscreen_alert", forbidden("full-screen warning")),
             ("set_paused", guarded_set_paused),
+            # the administrators-only state folder follows the (sandboxed or per-test) app folder; changing
+            # permissions is tested separately with icacls replaced
+            ("state_dir", lambda: rg.app_dir()),
+            ("secure_state_dir", lambda: None),
             ("alert", lambda title, msg: None)):
         _guards.append(mock.patch.object(rg, name, value))
     _guards.append(mock.patch.object(urllib.request, "urlopen", forbidden("internet")))
@@ -105,6 +110,14 @@ OLE_HEAD = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 def random_bytes(n=8192):
     return os.urandom(n)
+
+
+def overwrite(path, data):
+    """Replace a file's content in place, as ransomware encrypting an open file does. (Canary files are hidden,
+    and Windows refuses to open a hidden file for "create new" writing such as Path.write_bytes.)"""
+    with open(path, "r+b") as f:
+        f.truncate(0)
+        f.write(data)
 
 
 class TempDirTest(unittest.TestCase):
@@ -295,6 +308,22 @@ class HandlerTests(TempDirTest):
         self.assertEqual(sorted(p.name for p in self.canaries), sorted(rg.CANARY_NAMES))
         self.assertTrue(all(p.read_bytes() == rg.canary_bytes(p) for p in self.canaries))
         self.assertEqual({p.read_bytes()[:4] for p in self.canaries}, {b"PK\x03\x04"})
+        self.assertTrue(all(os.stat(p).st_file_attributes & 0x2 for p in self.canaries), "canaries are hidden")
+        self.assertFalse([n for n in rg.CANARY_NAMES if "canary" in n.lower()], "names don't give them away")
+        self.assertTrue({rg.norm(p) for p in self.canaries} <= {rg.norm(p) for p in rg.canary_record()})
+
+    def test_a_users_own_file_with_a_canary_name_is_never_touched(self):
+        mine = self.dir / "mine"
+        mine.mkdir()
+        own = mine / rg.CANARY_NAMES[1]
+        own.write_bytes(b"my real budget")
+        planted = rg.plant_canaries([mine])
+        self.assertEqual(own.read_bytes(), b"my real budget")
+        self.assertNotIn(rg.norm(own), {rg.norm(p) for p in planted})
+        self.assertNotIn(rg.norm(own), {rg.norm(p) for p in rg.canary_record()})
+        rg.remove_canaries(only_in=[mine])
+        self.assertEqual(own.read_bytes(), b"my real budget", "and never deleted")
+        self.assertEqual(sorted(p.name for p in mine.iterdir()), [rg.CANARY_NAMES[1]])
 
     def test_canary_deleted(self):
         self.h.on_any_event(FileDeletedEvent(str(self.canaries[0])))
@@ -308,7 +337,7 @@ class HandlerTests(TempDirTest):
         c = self.canaries[0]
         self.h.on_any_event(FileModifiedEvent(str(c)))  # same content (e.g. metadata change): no trigger
         self.assertEqual(self.fired, [])
-        c.write_bytes(random_bytes())
+        overwrite(c, random_bytes())
         self.h.on_any_event(FileModifiedEvent(str(c)))
         self.assertEqual(len(self.fired), 1)
 
@@ -386,7 +415,7 @@ class HandlerTests(TempDirTest):
 
     def test_canary_modified_while_not_running_is_reported_and_reset(self):
         c = self.canaries[0]
-        c.write_bytes(b"tampered")
+        overwrite(c, b"tampered")
         with mock.patch.object(rg, "alert") as alert:
             again = rg.plant_canaries([c.parent])
         alert.assert_called_once()
@@ -411,7 +440,7 @@ class HandlerTests(TempDirTest):
 
     def test_old_plain_text_canaries_are_accepted_then_upgraded(self):
         for c in self.canaries:
-            c.write_bytes(rg.LEGACY_CANARY_BYTES)
+            overwrite(c, rg.LEGACY_CANARY_BYTES)
         self.assertIsNone(rg.check_canaries(self.canaries))
         self.h.on_any_event(FileModifiedEvent(str(self.canaries[0])))
         self.assertEqual(self.fired, [])
@@ -422,12 +451,16 @@ class HandlerTests(TempDirTest):
         alert.assert_not_called()
         self.assertTrue(all(c.read_bytes() == rg.canary_bytes(c) for c in self.canaries))
 
-    def test_remove_canaries_handles_new_and_legacy_names(self):
-        for n in rg.LEGACY_CANARY_NAMES:
-            (self.dir / "docs" / n).write_bytes(b"old")
-        with mock.patch.object(rg, "default_canary_dirs", lambda: [self.dir / "docs"]):
+    def test_remove_canaries_handles_recorded_and_legacy_ones(self):
+        documents = self.dir / "Documents"
+        documents.mkdir()
+        for n in rg.LEGACY_CANARY_NAMES:  # the visible ones of versions before 1.7.5
+            (documents / n).write_bytes(b"old")
+        with mock.patch.object(rg, "_known_folder", lambda name: self.dir / name):
             rg.remove_canaries()
         self.assertEqual(list((self.dir / "docs").iterdir()), [])
+        self.assertEqual(list(documents.iterdir()), [])
+        self.assertEqual(rg.canary_record(), [])
 
 
 # ---------------------------------------------------------------- end to end with a real file watcher
@@ -584,7 +617,7 @@ class NetworkTests(TempDirTest):
     def setUp(self):
         super().setUp()
         for name, value in (("app_dir", lambda: self.dir), ("is_admin", lambda: True), ("_run", lambda a: None),
-                            ("default_canary_dirs", lambda: [self.dir]), ("IS_WINDOWS", True)):
+                            ("IS_WINDOWS", True)):
             p = mock.patch.object(rg, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -811,7 +844,8 @@ class UpdateTests(TempDirTest):
         app = self.dir / "app"
         app.mkdir(exist_ok=True)
         (app / "state.json").write_text(json.dumps(state or {}), encoding="utf-8")
-        env = dict(os.environ, RG_HEALTH_TEST="1", RG_HEALTH_TASK=task, RG_HEALTH_APPDIR=str(app))
+        env = dict(os.environ, RG_HEALTH_TEST="1", RG_HEALTH_TASK=task, RG_HEALTH_APPDIR=str(app),
+                   RG_HEALTH_STATE=str(app))
         r = subprocess.run([os.path.join(os.environ["SystemRoot"], "System32", "cscript.exe"), "//Nologo", str(js)],
                            capture_output=True, env=env, timeout=60)
         return r.stdout.decode("ascii", "replace").strip()
@@ -1387,9 +1421,11 @@ class MonitorLoopTests(TempDirTest):
             self.addCleanup(p.stop)
 
     def start(self):
-        t = threading.Thread(target=rg.run, args=(argparse.Namespace(watch=[str(self.watch)], dry_run=False),),
-                             daemon=True)
+        self.stop = threading.Event()
+        t = threading.Thread(target=rg.run, args=(argparse.Namespace(watch=[str(self.watch)], dry_run=False),
+                                                  self.stop), daemon=True)
         t.start()
+        self.addCleanup(lambda: (self.stop.set(), t.join(15)))
         time.sleep(1.5)  # canary files planted, file monitor running
         return t
 
@@ -1398,28 +1434,68 @@ class MonitorLoopTests(TempDirTest):
         while time.time() < end and not cond():
             time.sleep(0.1)
 
-    def test_a_trigger_responds_once_and_ends_monitoring(self):
+    def test_a_trigger_responds_once_and_monitoring_goes_on(self):
         t = self.start()
         canary = self.watch / rg.CANARY_NAMES[0]
         self.assertEqual(canary.read_bytes(), rg.canary_bytes(canary))
-        canary.write_bytes(b"encrypted")
-        t.join(15)
-        self.assertFalse(t.is_alive(), "monitoring ends after a trigger, until the network is restored")
+        overwrite(canary, b"encrypted")
+        self.wait_for(lambda: self.triggered)
+        (self.watch / rg.CANARY_NAMES[1]).unlink()  # a second hit doesn't trigger again
+        time.sleep(2)
         self.assertEqual(len(self.triggered), 1)
         self.assertIn("Canary file", self.triggered[0][0])
+        # it keeps running, so the scheduled task's every-few-minutes start doesn't start it again, and
+        # dangerous commands are still stopped while the network is cut
+        self.assertTrue(t.is_alive())
         pm = StubProcessMonitor.instances[0]
         self.assertTrue(pm.kill)
+        self.assertFalse(pm.stopped)
+        self.stop.set()
+        t.join(15)
+        self.assertFalse(t.is_alive())
         self.assertTrue(pm.stopped)
 
     def test_a_stopped_process_monitor_is_restarted(self):
-        t = self.start()
+        self.start()
         pm = StubProcessMonitor.instances[0]
         pm.dead = True
         self.wait_for(lambda: pm.starts >= 2)
         self.assertEqual(pm.starts, 2)
-        (self.watch / rg.CANARY_NAMES[1]).unlink()  # end the monitor
-        t.join(15)
-        self.assertFalse(t.is_alive())
+
+    def run_once(self):
+        """Start the monitor and let it end right after starting."""
+        stop = threading.Event()
+        stop.set()
+        rg.run(argparse.Namespace(watch=[str(self.watch)], dry_run=False), stop)
+
+    def test_a_stop_by_the_user_holds_until_windows_restarts(self):
+        with mock.patch.object(rg, "stop_monitor", lambda: None), mock.patch.object(rg, "boot_time", lambda: 1000.0):
+            rg.stop_monitor_until_restart()
+            self.assertTrue(rg.stopped_by_user())
+            with self.assertRaises(SystemExit) as e:  # the task's next start finds it and leaves at once
+                self.run_once()
+            self.assertEqual(e.exception.code, 0)
+            self.assertFalse(list(self.watch.iterdir()), "no canary files planted")
+        with mock.patch.object(rg, "boot_time", lambda: 9000.0):  # Windows restarted since
+            self.assertFalse(rg.stopped_by_user())
+        with mock.patch.object(rg, "boot_time", lambda: 1000.0), mock.patch.object(rg, "_ps", lambda c: (0, "", "")), \
+                mock.patch.object(rg, "task_state", lambda: "Running"), mock.patch.object(rg.time, "sleep"):
+            self.assertTrue(rg.start_monitor())  # "Install and start monitoring" / restore clear it
+            self.assertFalse(rg.stopped_by_user())
+
+    def test_the_cut_network_is_brought_up_once_per_windows_start(self):
+        rg.save_state({"triggered_at": "2026-11-04 10:00:00", "disabled_adapters": ["Wi-Fi"]})
+        alerts = []
+        with mock.patch.object(rg, "alert", lambda title, msg: alerts.append(msg)), \
+                mock.patch.object(rg, "boot_time", lambda: 5000.0):
+            self.run_once()
+            self.run_once()  # started again by the task a few minutes later
+        self.assertEqual(len(alerts), 1)
+        with mock.patch.object(rg, "alert", lambda title, msg: alerts.append(msg)), \
+                mock.patch.object(rg, "boot_time", lambda: 99000.0):
+            self.run_once()  # after a restart: reminded again
+        self.assertEqual(len(alerts), 2)
+        self.assertEqual(rg.load_state()["disabled_adapters"], ["Wi-Fi"])
 
     def test_no_start_without_administrator_rights_or_when_already_running(self):
         args = argparse.Namespace(watch=[str(self.watch)], dry_run=False)
@@ -1571,7 +1647,8 @@ class StatusAndOfflineTests(TempDirTest):
         self.assertEqual(cards("Ready", {}), ("warn", "ok"))
         self.assertEqual(cards("", {}), ("off", "ok"))
         self.assertEqual(cards("Running", {"triggered_at": "2026-11-02 10:00:00"}), ("ok", "bad"))
-        self.assertEqual(cards("Ready", {"firewall": [{"Name": "Domain"}]}), ("warn", "bad"))
+        self.assertEqual(cards("Ready", {"firewall": [{"Name": "Domain", "Enabled": "True", "In": "Block",
+                                                       "Out": "Allow"}]}), ("warn", "bad"))
 
     def test_network_turned_back_on_is_cut_again_while_the_warning_is_open(self):
         polls = iter([None, None, None, 0, 0])  # the warning closes after two checks
@@ -1641,6 +1718,11 @@ class InstallTests(TempDirTest):
         self.assertIn(str(install_dir / "RansomGuard.exe"), task)
         self.assertIn("--monitor", task)
         self.assertIn("RunLevel Highest", task)
+        # started again every few minutes if something ended it; never ended by that trigger itself
+        self.assertIn("-Trigger $t, $t2", task)
+        self.assertIn(f"-RepetitionInterval (New-TimeSpan -Minutes {rg.MONITOR_RESTART_MINUTES})", task)
+        self.assertIn("$t2.Repetition.StopAtDurationEnd = $false", task)
+        self.assertIn("-MultipleInstances IgnoreNew", task)
         self.assertTrue(any(rg.HEALTH_TASK in c for c in cmds))
         shortcut = next(c for c in cmds if "CreateShortcut" in c)
         self.assertIn(str(install_dir / "icon.ico"), shortcut)
@@ -1648,6 +1730,147 @@ class InstallTests(TempDirTest):
     def test_a_failed_task_registration_stops_the_install(self):
         with self.assertRaises(RuntimeError):
             self.install(register_rc=1)
+
+
+# ---------------------------------------------------------------- state only administrators can change
+class StateSecurityTests(TempDirTest):
+    def test_a_tampered_state_file_cannot_steer_the_restore(self):
+        tampered = {
+            "triggered_at": "2026-11-04 10:00:00",
+            "disabled_adapters": ["Wi-Fi", 7, "", "x" * 300],
+            "firewall": [{"Name": "Domain", "Enabled": "True", "In": "Block", "Out": "Allow"},
+                         {"Name": "Domain'; Set-NetFirewallProfile -Enabled False; '", "Enabled": "True",
+                          "In": "Block", "Out": "Allow"},
+                         {"Name": "Public", "Enabled": "$false", "In": "Block", "Out": "Allow"}, "junk"],
+            "paused": [{"pid": 40, "name": "a.exe", "path": r"C:\x\a.exe", "paused": True, "result": "paused"},
+                       {"pid": "40"}, {"pid": True}, {"pid": -1}, None],
+            "anything": "else"}
+        st = rg.clean_state(tampered)
+        self.assertEqual(st["disabled_adapters"], ["Wi-Fi"])
+        self.assertEqual(st["firewall"], [{"Name": "Domain", "Enabled": "True", "In": "Block", "Out": "Allow"}])
+        self.assertEqual([p["pid"] for p in st["paused"]], [40])
+        self.assertNotIn("anything", st)
+        self.assertEqual(rg.clean_state({}), {})
+
+    def test_state_lives_in_its_own_folder_and_an_old_one_is_moved_over_checked(self):
+        state, app = self.dir / "ProgramData", self.dir / "LocalAppData"
+        app.mkdir()
+        (app / "state.json").write_text(json.dumps({"triggered_at": "t", "firewall": [
+            {"Name": "Domain", "Enabled": "False; evil", "In": "Block", "Out": "Allow"}]}), encoding="utf-8")
+        with mock.patch.object(rg, "state_dir", lambda: state), mock.patch.object(rg, "app_dir", lambda: app):
+            self.assertEqual(rg.load_state(), {"triggered_at": "t", "firewall": []})
+            self.assertTrue((state / "state.json").exists())
+            self.assertFalse((app / "state.json").exists(), "the copy in the user's folder is gone")
+            rg.save_state({"triggered_at": "u"})
+            self.assertEqual(rg.load_state(), {"triggered_at": "u"})
+
+    def secure(self, state):
+        cmds = []
+        with mock.patch.object(rg, "secure_state_dir", REAL["secure_state_dir"]), \
+                mock.patch.object(rg, "state_dir", lambda: state), \
+                mock.patch.object(rg, "IS_WINDOWS", True), mock.patch.object(rg, "_state_secured", False), \
+                mock.patch.object(rg, "_run", lambda args: cmds.append(args)), \
+                mock.patch.dict(os.environ, {"USERDOMAIN": "PC", "USERNAME": "someone"}):
+            rg.secure_state_dir()
+            rg.secure_state_dir()  # once per run
+        return cmds
+
+    def junction(self, link, target):
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, check=True)
+
+    def test_the_state_folder_is_handed_to_administrators(self):
+        state, elsewhere = self.dir / "RansomGuard", self.dir / "elsewhere"
+        state.mkdir()
+        elsewhere.mkdir()
+        (elsewhere / "precious.txt").write_text("keep", encoding="utf-8")
+        (state / "state.json").write_text("{}", encoding="utf-8")
+        (state / "planted.txt").write_text("x", encoding="utf-8")  # someone created the folder first
+        (state / "folder").mkdir()
+        self.junction(state / "link", elsewhere)
+        cmds = self.secure(state)
+        self.assertEqual(sorted(p.name for p in state.iterdir()), ["state.json"])  # only RansomGuard's own files
+        self.assertEqual((elsewhere / "precious.txt").read_text(encoding="utf-8"), "keep", "a link is never followed")
+        owner = [c for c in cmds if "/setowner" in c]
+        self.assertEqual([c[1] for c in owner], [str(state), str(state / "state.json")])  # owned by Administrators
+        self.assertTrue(all(c[c.index("/setowner") + 1] == "*S-1-5-32-544" for c in owner))
+        grant = next(c for c in cmds if "/grant:r" in c)
+        self.assertIn("/inheritance:r", grant)  # nothing inherited from ProgramData
+        self.assertIn("*S-1-5-18:(OI)(CI)F", grant)
+        self.assertIn("*S-1-5-32-544:(OI)(CI)F", grant)
+        self.assertIn(r"PC\someone:(OI)(CI)RX", grant)  # the user may only read
+        self.assertFalse([c for c in cmds if "/T" in c], "never recursive")
+        self.assertTrue(all(c[0].lower().endswith("icacls.exe") for c in cmds))
+
+    def test_a_link_in_place_of_the_state_folder_is_removed_not_followed(self):
+        state, elsewhere = self.dir / "RansomGuard", self.dir / "System32-like"
+        elsewhere.mkdir()
+        (elsewhere / "system.dll").write_text("keep", encoding="utf-8")
+        self.junction(state, elsewhere)
+        cmds = self.secure(state)
+        self.assertFalse(rg._is_link(state))
+        self.assertTrue(state.is_dir())
+        self.assertEqual((elsewhere / "system.dll").read_text(encoding="utf-8"), "keep")
+        self.assertFalse([c for c in cmds if str(elsewhere) in " ".join(c)])
+
+    def test_a_tampered_canary_record_deletes_nothing_but_canaries(self):
+        victim = self.dir / "important.dll"
+        victim.write_text("keep", encoding="utf-8")
+        canary = self.dir / rg.CANARY_NAMES[0]
+        canary.write_bytes(rg.CANARY_DOCX)
+        with mock.patch.object(rg, "app_dir", lambda: self.dir), mock.patch.object(rg, "_known_folder", lambda n: self.dir / n):
+            (self.dir / "canaries.json").write_text(json.dumps([str(victim), str(canary)]), encoding="utf-8")
+            rg.remove_canaries()
+        self.assertTrue(victim.exists())
+        self.assertFalse(canary.exists())
+
+    def test_real_state_folder_is_under_programdata(self):
+        with mock.patch.object(rg, "IS_WINDOWS", True), mock.patch.dict(os.environ, {"ProgramData": r"C:\ProgramData"}):
+            self.assertEqual(REAL["state_dir"](), Path(r"C:\ProgramData\RansomGuard"))
+
+
+# ---------------------------------------------------------------- folders the user adds in the control panel
+class WatchFolderTests(TempDirTest):
+    def setUp(self):
+        super().setUp()
+        for name in ("Desktop", "Documents", "Pictures", "Downloads", "Videos", "Music", "D", "System"):
+            (self.dir / name).mkdir()
+        for name, value in (("_known_folder", lambda name: self.dir / name), ("app_dir", lambda: self.dir)):
+            p = mock.patch.object(rg, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        # the test folder itself is under %LOCALAPPDATA%\Temp, which may not be watched: point those elsewhere
+        p = mock.patch.dict(os.environ, {"SystemRoot": str(self.dir / "System"), "SystemDrive": str(self.dir)[:2],
+                                         "LOCALAPPDATA": r"Q:\LocalAppData", "APPDATA": r"Q:\AppData"})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_which_folders_may_be_added(self):
+        self.assertEqual(rg.watch_problem(self.dir / "D"), "")
+        self.assertIn("doesn't exist", rg.watch_problem(self.dir / "missing"))
+        self.assertIn("system drive", rg.watch_problem(str(self.dir)[:2] + "\\"))
+        self.assertIn("change too often", rg.watch_problem(self.dir / "System"))
+        self.assertIn("watched already", rg.watch_problem(self.dir / "Documents"))
+        (self.dir / "Documents" / "Work").mkdir()
+        self.assertIn("watched already", rg.watch_problem(self.dir / "Documents" / "Work"))
+
+    def test_added_folders_are_saved_and_checked_again_when_read(self):
+        rg.save_extra_watch_dirs([self.dir / "D", self.dir / "System", self.dir / "gone"])
+        self.assertEqual(rg.extra_watch_dirs(), [self.dir / "D"])  # what can't be watched is left out
+        (self.dir / "watch.json").write_text("not json", encoding="utf-8")
+        self.assertEqual(rg.extra_watch_dirs(), [])
+
+    def test_the_monitor_watches_and_plants_canaries_in_added_folders(self):
+        rg.save_extra_watch_dirs([self.dir / "D"])
+        seen = {}
+        with mock.patch.object(rg, "plant_canaries", lambda dirs, upgrade=False: seen.update(dirs=dirs) or []), \
+                mock.patch.object(rg, "make_handler", mock.Mock(side_effect=SystemExit(0))), \
+                mock.patch.object(rg, "is_admin", lambda: True), mock.patch.object(rg, "single_instance", lambda: True), \
+                mock.patch.object(rg, "exit_with_launcher", lambda: None), \
+                mock.patch.object(rg, "cleanup_old_files", lambda: None), mock.patch.object(rg, "IS_WINDOWS", True):
+            with self.assertRaises(SystemExit):
+                rg.run(argparse.Namespace(watch=None, dry_run=False))
+        self.assertIn(self.dir / "D", seen["dirs"])
+        self.assertIn(self.dir / "Music", seen["dirs"])  # and canaries go into every watched folder
 
 
 if __name__ == "__main__":
