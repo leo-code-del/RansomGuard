@@ -1,0 +1,23 @@
+# Dependabot opens pull requests that update the pinned versions in this repository once a week.
+# CI builds and tests each one on Windows; merge it only when CI passes (Squash and merge).
+# Python itself (python-version in the workflows) is not updated here: it stays pinned until a newer
+# version is checked to work with PyInstaller (see DEVELOPMENT.md, v1.7.1).
+version: 2
+updates:
+  # actions pinned to full commit SHAs in .github/workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # requirements.txt and requirements-build.txt
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-packages:
+        patterns: ["*"]

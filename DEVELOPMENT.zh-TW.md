@@ -76,6 +76,10 @@ python -m unittest discover -s tests -v
 
 有些測試會實際使用唯讀的 Windows 功能：透過 WMI 監看新程序、用 Defender 掃描暫存檔，以及讀取排程工作。
 
+## 套件更新
+
+[Dependabot](.github/dependabot.yml) 每週會檢查一次，鎖定版本的 GitHub Action 或 Python 套件有新版時就開 PR。CI 會在 Windows 上打包和測試，通過了才合併。Python 本身在 workflow 裡維持固定版本，等確認新版能搭配 PyInstaller 使用才更新。
+
 ## 發布新版
 
 發布版本由 GitHub Actions 打包和發布，不再手動上傳：
