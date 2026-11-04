@@ -50,7 +50,8 @@ Any one of these triggers it:
 | Detection | What triggers it |
 | --- | --- |
 | **Canary files** | Hidden decoy documents in every watched folder are modified, moved or deleted. They have ordinary-looking names, so ransomware that skips obvious decoys still reaches them |
-| **Broken files** | Within a short time, several .docx / .pdf / .jpg / .mp4 files get corrupted headers, or text files turn into what looks like encrypted data |
+| **Broken files** | Within a short time, several documents, photos (also camera RAW), videos, mailboxes or password databases get corrupted headers, or text files turn into what looks like encrypted data. Office files, zip archives and PDFs are also checked at their end, which catches ransomware that leaves the header alone and encrypts the rest or only blocks of it (partial and intermittent encryption) |
+| **Encrypted copies** | Files are deleted and, at the same moment, new files of an unknown type that look encrypted appear in the same folder, e.g. `photo.jpg` → `a8Fk2.b3c1`: ransomware that writes an encrypted copy under another name and deletes the original |
 | **Unknown extensions** | Many files are renamed within a short time, e.g. `report.docx` → `report.docx.locked` |
 | **Ransom notes** | Files such as `HOW_TO_DECRYPT.txt` appear in several folders within a short time |
 | **Dangerous commands** | A program deletes restore points, disables boot recovery, deletes backups, clears event logs or turns off Defender. The command is ended immediately and the program that started it is paused, because ransomware usually does this just before it starts encrypting |
@@ -134,7 +135,7 @@ RansomGuard.exe asks for administrator rights (User Account Control) when it sta
 
 ### What it reads
 
-- **Files** that change in Desktop, Documents, Pictures, Downloads, Videos and Music. For common formats (Office files, PDF, pictures, videos, text files) only the first 16 KB, to check whether the file looks encrypted. OneDrive files that are not downloaded yet are skipped. Other drives and network drives are not read, unless you add them with **Watched folders…** (or `--watch`).
+- **Files** that change in Desktop, Documents, Pictures, Downloads, Videos and Music. For common formats (Office files, PDF, pictures, videos, text files) only the first 16 KB, to check whether the file looks encrypted; of Office files, zip archives, PDFs and large text files also the last 4 KB and, for Office files and zip archives, the few bytes where each part starts. A new file of an unknown type is read only when a file is deleted in the same folder at the same moment. OneDrive files that are not downloaded yet are skipped. Other drives and network drives are not read, unless you add them with **Watched folders…** (or `--watch`).
 - **Programs:** the command line of every program that starts, to spot the dangerous commands listed above; only those are written to the log. When it triggers, it also reads how much each running program has written.
 
 ### What it creates or changes
@@ -227,17 +228,17 @@ Keep using antivirus software (such as Microsoft Defender), install Windows upda
 - It is not antivirus software. It doesn't recognize malware; it only reacts to behavior that looks like encryption.
 - It watches only Desktop, Documents, Pictures, Downloads, Videos and Music. Files on other drives, network drives and cloud folders outside these are not protected, unless you add them with **Watched folders…**.
 - Some files are lost before it reacts. It triggers after about 8 to 10 files look encrypted within 30 seconds (or when a canary file is touched), and Windows reports file changes with a delay of about one second.
-- Ransomware that encrypts slowly enough to stay under these thresholds is caught only if it touches a canary file. So is ransomware that keeps each file's name and leaves its first bytes intact.
+- Ransomware that encrypts slowly enough to stay under these thresholds is caught only if it touches a canary file. So is ransomware that keeps each file's name and encrypts only the middle of photos and videos, leaving their start intact (for Office files, zip archives, PDFs and text files the end is checked too).
 - Ransomware that deletes restore points through Windows programming interfaces, instead of running commands such as `vssadmin`, is not caught by the dangerous-command check.
 - Programs that write through memory-mapped files don't show up in the write counts, so they may not be found to be paused.
 - Ransomware that already has administrator rights can stop RansomGuard. The scheduled task starts it again within 5 minutes; if the ransomware deletes the task too, the health check tells you within a day.
 - After it triggers, it doesn't trigger a second time until you restore the network, but it keeps stopping dangerous commands and pausing the programs behind them.
-- It has been tested with automated tests and simulated ransomware (files encrypted and renamed by a test script), never with real ransomware.
+- It has been tested with automated tests and simulated ransomware (a test script using 11 techniques, from encrypting and renaming to partial and intermittent encryption and encrypted copies), alongside 11 kinds of everyday work that must not trigger it, never with real ransomware.
 - Windows 10 and 11 only, and it needs administrator rights.
 
 ### Things that can go wrong
 
-- **False alarms cut the network.** This happens if you touch a canary file, if a program renames 10 or more files to an unusual extension within 30 seconds, or if files named like ransom notes (e.g. `how to recover files.txt`) appear in three folders.
+- **False alarms cut the network.** This happens if you touch a canary file, if a program renames 10 or more files to an unusual extension within 30 seconds, if files named like ransom notes (e.g. `how to recover files.txt`) appear in three folders, or if a file-encryption program (such as AxCrypt) turns 8 or more documents into encrypted files and deletes the originals within 30 seconds.
 - **Legitimate maintenance is stopped.** Backup software or an administrator running `wbadmin delete backup`, `vssadmin delete shadows` or `wevtutil cl` is treated as ransomware: the command is ended and the network is cut.
 - **Normal programs can be paused by a false alarm.** Editors, browsers and OneDrive write all the time and may be paused (and freeze) until you restore the network from the control panel. If you restore with `restore_network.bat` instead, they stay paused until the computer restarts.
 - **You won't hear about new versions unless you ask.** Automatic update checks are off by default for privacy, so improvements and fixes reach you only if you click **Check for updates** now and then, or turn on **Check for updates automatically**.

@@ -163,6 +163,29 @@ def random_bytes(n=8192):
     return os.urandom(n)
 
 
+def real_zip(n=8192, comment=b""):
+    """A real ZIP-based file (an Office document, say) holding n random bytes."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("word/document.xml", b"<w:document>" + b"<w:p>text</w:p>" * 50 + b"</w:document>")
+        z.writestr("word/media/image1.png", os.urandom(n))
+        z.comment = comment
+    return buf.getvalue()
+
+
+def real_pdf(n=8192):
+    return b"%PDF-1.7\n" + os.urandom(n) + b"\nxref\n0 1\ntrailer\n<< /Size 1 >>\nstartxref\n9\n%%EOF\n"
+
+
+def encrypt_end(path, n=4096):
+    """Encrypt only the end of a file, leaving its header alone (partial encryption)."""
+    with open(path, "r+b") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - n))
+        f.write(os.urandom(min(n, size)))
+
+
 def overwrite(path, data):
     """Replace a file's content in place, as ransomware encrypting an open file does. (Canary files are hidden,
     and Windows refuses to open a hidden file for "create new" writing such as Path.write_bytes.)"""
@@ -251,6 +274,83 @@ class BrokenFileTests(TempDirTest):
         self.assertIsNone(rg.broken_reason(self.file("zeros.mp4", b"\0" * 100000)))
         self.assertIsNone(rg.broken_reason(self.file("data.bin", random_bytes())))
         self.assertIsNone(rg.broken_reason(str(self.dir / "missing.docx")))
+
+    def test_more_kinds_of_files_people_keep(self):
+        # camera RAW photos, mailboxes, password databases, Access databases: real ones pass, encrypted ones don't
+        real = {"IMG_0001.cr2": b"II*\x00\x10\x00\x00\x00CR\x02\x00", "DSC_0001.nef": b"MM\x00*\x00\x00\x00\x08",
+                "P1000001.rw2": b"IIU\x00\x18\x00\x00\x00", "DSCF0001.raf": b"FUJIFILMCCD-RAW 0201",
+                "IMG_0001.cr3": b"\x00\x00\x00\x18ftypcrx ", "Outlook.pst": b"!BDN\x00\x00\x00\x00",
+                "Passwords.kdbx": b"\x03\xd9\xa2\x9a\x67\xfb\x4b\xb5", "Shop.accdb": b"\x00\x01\x00\x00Standard ACE DB\x00",
+                "Mail.msg": OLE_HEAD}
+        for name, head in real.items():
+            self.assertIsNone(rg.broken_reason(self.file(name, head + random_bytes())), name)
+            self.assertIsNotNone(rg.broken_reason(self.file("enc_" + name, random_bytes())), name)
+
+    def test_text_encrypted_after_its_start_is_broken(self):
+        text = b"2026-11-04 10:00:00 meeting notes and plans\n" * 800  # ~35 KB
+        self.assertIsNone(rg.broken_reason(self.file("notes.txt", text)))
+        self.assertIsNotNone(rg.broken_reason(self.file("partly.txt", text[:20000] + random_bytes(16000))))
+
+
+class EndOfFileTests(TempDirTest):
+    """Partial encryption that leaves the header alone: the structure at the end of ZIP-based files and PDFs."""
+
+    def test_intact_files_pass(self):
+        for name, data in {"a.docx": real_zip(), "b.xlsx": real_zip(200000), "c.pdf": real_pdf(),
+                           "commented.zip": real_zip(comment=b"x" * 10000), "tiny.zip": real_zip(10)}.items():
+            self.assertIsNone(rg.damaged_end(self.file(name, data)), name)
+
+    def test_encrypted_end_is_found(self):
+        for name, data in {"a.docx": real_zip(), "b.pptx": real_zip(300000), "c.pdf": real_pdf(50000)}.items():
+            p = self.file(name, data)
+            encrypt_end(p)
+            self.assertIsNotNone(rg.damaged_end(p), name)
+            self.assertIsNone(rg.broken_reason(p), "the header is intact, so only the end gives it away")
+
+    def test_encrypted_middle_that_reaches_the_zip_directory_is_found(self):
+        import zipfile
+        data = real_zip(300000)
+        eocd = data.rfind(b"PK\x05\x06")
+        cd = zipfile.ZipFile(io.BytesIO(data)).start_dir
+        p = self.file("big.docx", data[:cd] + os.urandom(eocd - cd) + data[eocd:])  # the end record survives
+        self.assertIsNotNone(rg.damaged_end(p))
+
+    def test_intermittent_encryption_that_spares_the_end_is_found(self):
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:  # an Office file: many parts, each with its own header
+            for k in range(12):
+                z.writestr(f"word/media/image{k}.jpeg", b"\xff\xd8\xff\xe0" + os.urandom(40000))
+        data = bytearray(buf.getvalue())
+        self.assertIsNone(rg.damaged_end(self.file("intact.pptx", bytes(data))))
+        for k in range(65536, len(data) - 4096, 65536):  # 16 KB of every 64 KB; header and end untouched
+            data[k:k + 16384] = os.urandom(16384)
+        self.assertIsNotNone(rg.damaged_end(self.file("blocks.pptx", bytes(data[:len(data)]))))
+        empty = io.BytesIO()
+        zipfile.ZipFile(empty, "w").close()
+        self.assertIsNone(rg.damaged_end(self.file("empty.zip", empty.getvalue())))
+
+    def test_unfinished_or_reserved_files_are_no_alarm(self):
+        self.assertIsNone(rg.damaged_end(self.file("reserved.zip", b"PK\x03\x04" + b"\0" * 100000)))
+        self.assertIsNone(rg.damaged_end(self.file("cut_in_text.pdf", b"%PDF-1.4\n" + b"1 0 obj << >> endobj\n" * 500)))
+        self.assertIsNone(rg.damaged_end(self.file("other.jpg", b"\xff\xd8\xff\xe0" + random_bytes())))
+        self.assertIsNone(rg.damaged_end(self.file("password.docx", OLE_HEAD + random_bytes())))
+        self.assertIsNone(rg.damaged_end(str(self.dir / "missing.docx")))
+
+    def test_unknown_files_that_look_encrypted(self):
+        self.assertTrue(rg.looks_encrypted(self.file("a8Fk2.b3c1", random_bytes())))
+        self.assertFalse(rg.looks_encrypted(self.file("small.b3c1", random_bytes(500))))
+        self.assertFalse(rg.looks_encrypted(self.file("zeros.b3c1", b"\0" * 8192)))
+        self.assertFalse(rg.looks_encrypted(self.file("zipped.pak", real_zip())))
+        self.assertFalse(rg.looks_encrypted(self.file("notes.xyz", b"plain text\n" * 1000)))
+
+    def test_a_file_being_written_by_another_program(self):
+        p = self.file("copying.docx", b"PK\x03\x04")
+        with open(p, "ab") as f:
+            f.write(random_bytes())
+            self.assertTrue(rg.being_written(p))
+        self.assertFalse(rg.being_written(p))
+        self.assertFalse(rg.being_written(str(self.dir / "missing.docx")))
 
 
 # ---------------------------------------------------------------- extensions
@@ -427,6 +527,22 @@ class HandlerTests(TempDirTest):
         self.h.on_any_event(FileMovedEvent(f"{self.dir}\\z.docx", f"{self.dir}\\z.docx.locked"))
         self.assertEqual(len(self.fired), 1)
 
+    def test_temporary_files_of_saves_are_not_counted(self):
+        # editors and tools save through "name.ext.tmp.<pid>.<random>" or "name.ext.<number>" and rename it at once
+        # (this cut the network on 2026-11-04 while README files were edited in a watched folder)
+        for i in range(30):
+            for tmp in (f"notes{i}.md.tmp.1724.{os.urandom(6).hex()}", f"package{i}.json.{2348927342 + i}"):
+                p = self.file(tmp, b"text")
+                self.h.on_any_event(FileCreatedEvent(p))
+                self.h.on_any_event(FileMovedEvent(p, p.split(".")[0] + "." + tmp.split(".")[1]))
+            p = self.file(f"draft{i}.txt.{os.urandom(4).hex()}", b"text")  # written, then deleted
+            self.h.on_any_event(FileCreatedEvent(p))
+            self.h.on_any_event(FileDeletedEvent(p))
+        self.assertEqual(self.fired, [])
+        for i in range(rg.EXT_CHANGE_THRESHOLD):  # files that stay under their new names still count
+            self.h.on_any_event(FileCreatedEvent(self.file(f"report{i}.docx.{os.urandom(6).hex()}", b"x")))
+        self.assertEqual(len(self.fired), 1)
+
     def test_ransom_notes_need_several_folders(self):
         for _ in range(5):  # many notes in one folder: still one folder
             self.h.on_any_event(FileCreatedEvent(self.file("a/HOW_TO_DECRYPT.txt", b"pay")))
@@ -458,6 +574,80 @@ class HandlerTests(TempDirTest):
             with mock.patch.object(rg, "RECHECK_SEC", 0):  # and an unchanged file is read again later
                 self.h.on_any_event(FileModifiedEvent(p))
             self.assertEqual(len(reads), 3)
+
+    def wait_for(self, cond, timeout=10):
+        end = time.time() + timeout
+        while time.time() < end and not cond():
+            time.sleep(0.05)
+
+    def test_documents_encrypted_only_at_the_end_are_caught_once_settled(self):
+        self.patch("SETTLE_SEC", 0.2)
+        docs = [self.file(f"doc{i}.docx", real_zip()) for i in range(rg.BROKEN_THRESHOLD)]
+        for p in docs:
+            self.h.on_any_event(FileModifiedEvent(p))
+        time.sleep(1)
+        self.assertEqual(self.fired, [], "intact documents counted")
+        for p in docs:
+            encrypt_end(p)
+            self.h.on_any_event(FileModifiedEvent(p))
+        self.assertEqual(self.fired, [], "judged before the files were left alone")
+        self.wait_for(lambda: self.fired)
+        self.assertIn("files that look encrypted", self.fired[0])
+
+    def test_a_document_still_being_copied_is_judged_when_complete(self):
+        self.patch("SETTLE_SEC", 0.2)
+        data = real_zip(100000)
+        p = self.file("copy.docx", b"")
+        with open(p, "wb") as f:  # half copied: header, but no end yet
+            f.write(data[:50000])
+            f.flush()
+            self.h.on_any_event(FileModifiedEvent(p))
+            time.sleep(1)
+            self.assertEqual(len(self.h.broken), 0, "a file being copied was judged by its missing end")
+            f.write(data[50000:])
+        self.h.on_any_event(FileModifiedEvent(p))
+        time.sleep(1)
+        self.assertEqual(len(self.h.broken), 0)
+
+    def test_encrypted_copies_that_replace_deleted_originals_are_caught(self):
+        n = rg.BROKEN_THRESHOLD
+        originals = [self.file(f"photo{i}.jpg", b"\xff\xd8\xff\xe0" + random_bytes()) for i in range(n)]
+        for i, p in enumerate(originals):
+            copy = self.file(f"{os.urandom(5).hex()}.b3c1", random_bytes())  # random name and extension
+            if i % 2:  # either order
+                self.h.on_any_event(FileCreatedEvent(copy))
+                os.remove(p)
+                self.h.on_any_event(FileDeletedEvent(p))
+            else:
+                os.remove(p)
+                self.h.on_any_event(FileDeletedEvent(p))
+                self.h.on_any_event(FileCreatedEvent(copy))
+        self.assertEqual(len(self.fired), 1, "copy-and-delete was not caught")
+
+    def test_deleting_files_while_other_files_appear_is_no_alarm(self):
+        a, b = self.dir / "a", self.dir / "b"
+        for i in range(20):  # deleted in one folder, compressed files of unknown types arrive in another
+            p = self.file(f"a/old{i}.pdf", real_pdf())
+            os.remove(p)
+            self.h.on_any_event(FileDeletedEvent(p))
+            self.h.on_any_event(FileCreatedEvent(self.file(f"b/pack{i}.bin", random_bytes())))
+        with mock.patch.object(rg, "PAIR_SEC", 0.5):  # files deleted a while before others arrive: no pairs
+            time.sleep(0.6)
+            for i in range(20):
+                self.h.on_any_event(FileCreatedEvent(self.file(f"a/mod{i}.pak", random_bytes())))
+        p = self.file("a/one.docx", real_zip())  # one deleted, many new ones: pairs one
+        os.remove(p)
+        self.h.on_any_event(FileDeletedEvent(p))
+        for i in range(20):
+            self.h.on_any_event(FileCreatedEvent(self.file(f"a/save{i}.dat", random_bytes())))
+        for i in range(20):  # deleted and replaced by new files that aren't encrypted
+            p = self.file(f"c/doc{i}.docx", real_zip())
+            os.remove(p)
+            self.h.on_any_event(FileDeletedEvent(p))
+            self.h.on_any_event(FileCreatedEvent(self.file(f"c/doc{i}.converted", b"text " * 500)))
+        self.assertEqual(self.fired, [])
+        self.assertLessEqual(len(self.h.broken), 1)
+        self.assertTrue(a.is_dir() and b.is_dir())
 
     def test_temp_and_office_lock_files_ignored(self):
         for i in range(20):
@@ -574,11 +764,19 @@ class EndToEndTests(TempDirTest):
             (dl / f"archive.zip.{i + 1:03}").write_bytes(random_bytes(4096))
         for i in range(12):  # browser downloads finishing
             p = dl / f"report{i}.pdf.crdownload"
-            p.write_bytes(b"%PDF-1.5\n" + random_bytes(4096))
+            p.write_bytes(real_pdf(4096))
             p.rename(dl / f"report{i}.pdf")
         for i in range(10):  # web exports that are really HTML
             (dl / f"statement{i}.xls").write_text("<html><table>" + "<tr><td>1</td></tr>" * 400 + "</table></html>")
-        time.sleep(3)
+        docs = self.dir / "docs"
+        docs.mkdir()
+        for i in range(30):  # documents copied in, then saved Office-style (new file, old one deleted, renamed)
+            (docs / f"report{i}.docx").write_bytes(real_zip(30000))
+        for i in range(30):
+            (docs / f"~WRD{i:04}.tmp").write_bytes(real_zip(30000))
+            (docs / f"report{i}.docx").unlink()
+            (docs / f"~WRD{i:04}.tmp").rename(docs / f"report{i}.docx")
+        time.sleep(3 + rg.SETTLE_SEC)  # documents are judged by their end once left alone
         self.assertEqual(self.fired, [], self.fired[:1])
 
 

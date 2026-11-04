@@ -84,6 +84,7 @@ def kernel32():
             ("GetProcessTimes", B, [H] + [ctypes.POINTER(ctypes.c_uint64)] * 4),
             ("MoveFileExW", B, [S, S, D]),
             ("SetFileAttributesW", B, [S, D]),
+            ("CreateFileW", H, [S, D, D, H, D, D, H]),
             ("GetTickCount64", ctypes.c_uint64, [])):
         fn = getattr(k32, name)
         fn.restype, fn.argtypes = res, args
@@ -101,6 +102,20 @@ def process_path(pid: int) -> str:
     ok = k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
     k32.CloseHandle(h)
     return buf.value if ok else ""
+
+
+def being_written(path) -> bool:
+    """Another program has the file open for writing (it is being copied or downloaded, say): opening it while
+    allowing others only to read fails with a sharing violation. The handle is closed at once."""
+    if not config.IS_WINDOWS:
+        return False
+    k32 = kernel32()
+    # GENERIC_READ; FILE_SHARE_READ | FILE_SHARE_DELETE (renaming and deleting stay possible); OPEN_EXISTING
+    h = k32.CreateFileW(str(path), 0x80000000, 0x1 | 0x4, None, 3, 0x80, None)
+    if h is None or h == ctypes.c_void_p(-1).value:
+        return ctypes.get_last_error() == 32  # ERROR_SHARING_VIOLATION
+    k32.CloseHandle(h)
+    return False
 
 
 def delete_at_restart(path):
