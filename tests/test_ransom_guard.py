@@ -1539,6 +1539,18 @@ class PauseTests(TempDirTest):
         self.assertIn("make_version_info.py build\\version_info.txt", script)
         self.assertIn(r'--version-file "%~dp0build\version_info.txt"', script)
 
+    def test_release_notes_link_the_code_signing_policy(self):
+        # SignPath requires the code signing policy to be linked from every release page
+        sys.path.insert(0, str(ROOT / ".github" / "scripts"))
+        import release_notes
+        text = release_notes.notes("Fixes.\r\n\r\nDocs: link\r\n", "leo-code-del/RansomGuard")
+        self.assertTrue(text.startswith("Fixes.\n\nDocs: link\n"))
+        self.assertIn("**Code signing policy:**", text)
+        self.assertIn("RansomGuard#code-signing-policy", text)
+        self.assertEqual(release_notes.notes(text, "leo-code-del/RansomGuard"), text)  # added only once
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("release_notes.py", workflow)
+
     def test_version_info_matches_config(self):
         sys.path.insert(0, str(ROOT))
         import make_version_info

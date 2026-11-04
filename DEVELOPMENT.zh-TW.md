@@ -88,6 +88,6 @@ python -m unittest discover -s tests -v
    git push origin v1.7.6
    ```
 
-4. [發布 workflow](.github/workflows/release.yml) 會確認 tag 和 `VERSION` 一致、執行測試、打包 exe、簽署 attestation、發布 Release（先建立草稿，讓 exe 在版本變成不可變更之前附上去），並在上一版的說明加上建議更新的提示。
+4. [發布 workflow](.github/workflows/release.yml) 會確認 tag 和 `VERSION` 一致、執行測試、打包 exe、簽署 attestation、發布 Release，說明取自 `release-notes/<tag>.md` 並在最後自動加上 Code signing policy 連結（先建立草稿，讓 exe 在版本變成不可變更之前附上去），並在上一版的說明加上建議更新的提示。
 
 v1.7.0 起的 Release 是不可變更的：發布後檔案和 tag 都不能修改，所以出錯時只能發新的版本號，它們的 exe 也會一直可以下載。README 的下載按鈕永遠指向最新版本，不需要修改。
