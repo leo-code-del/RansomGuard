@@ -16,7 +16,7 @@ def version_tuple(v: str) -> tuple:
 def latest_release():
     """(version, RansomGuard.exe asset or None) of the newest release on GitHub."""
     req = urllib.request.Request(config.UPDATE_API, headers={"User-Agent": "RansomGuard",
-                                                      "Accept": "application/vnd.github+json"})
+                                                             "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as r:
         rel = json.load(r)
     return rel["tag_name"].lstrip("v"), next((a for a in rel["assets"] if a["name"] == "RansomGuard.exe"), None)

@@ -205,7 +205,7 @@ def fullscreen_alert(reason: str, status: str, wait: bool = False, paused=()):
     except Exception as ex:
         log.error(tr("%s；改用一般警告視窗", "%s; using a regular alert instead"), ex)
         winapi.alert(tr("RansomGuard：偵測到疑似勒索病毒", "RansomGuard: possible ransomware detected"),
-              tr(f"{reason}\n\n狀態：{status}", f"{reason}\n\nStatus: {status}"))
+                     tr(f"{reason}\n\n狀態：{status}", f"{reason}\n\nStatus: {status}"))
         return None
 
 

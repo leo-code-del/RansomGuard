@@ -310,8 +310,8 @@ def gui(auto_update=False):
         run_bg(lambda rep: (rep(tr("警告畫面開啟中，按「我知道了」即可關閉。",
                                    "Opening the warning. Click \"I understand\" to close it.")),
                             response.fullscreen_alert(tr("這是警告畫面的預覽，沒有偵測到任何東西",
-                                                "This is a preview of the warning; nothing was detected"),
-                                             "test")))
+                                                         "This is a preview of the warning; nothing was detected"),
+                                                      "test")))
 
     def on_log():
         p = config.app_dir() / "guard.log"

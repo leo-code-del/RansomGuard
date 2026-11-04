@@ -35,7 +35,7 @@ def task_state() -> str:
     """Scheduled task state (Running / Ready / Disabled...); empty string if not installed."""
     try:
         return winapi._ps(f"(Get-ScheduledTask -TaskName {winapi._ps_quote(config.TASK_NAME)} "
-                   "-ErrorAction SilentlyContinue).State")[1]
+                          "-ErrorAction SilentlyContinue).State")[1]
     except Exception:
         return ""
 
@@ -45,7 +45,7 @@ def stop_monitor():
     # the encoded opening line of PROC_PS1, the same in every version, so older monitors' scripts match too
     proc_enc = winapi.ps_encoded_args(processes.PROC_PS1)[-1][:120]
     winapi._ps(_KILL_PS1.replace("__ME__", f"{os.getpid()},{os.getppid()}")
-        .replace("__PROC__", proc_enc))
+               .replace("__PROC__", proc_enc))
     log.info(tr("已停止背景監控", "Background monitoring stopped"))
 
 
@@ -312,10 +312,11 @@ def _install(report, update=True) -> bool:
     if config.FROZEN and icon.endswith(".ico"):
         shutil.copy2(icon, str(config.INSTALL_DIR / "icon.ico"))
         icon = str(config.INSTALL_DIR / "icon.ico")
+    shortcut_args = (args + " --gui").strip() if args else ""
     winapi._ps(f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({winapi._ps_quote(str(desktop_lnk()))}); "
-        f"$s.TargetPath = {winapi._ps_quote(exe)}; $s.Arguments = {winapi._ps_quote((args + ' --gui').strip() if args else '')}; "
-        f"$s.WorkingDirectory = {winapi._ps_quote(workdir)}; $s.IconLocation = {winapi._ps_quote(icon + ',0')}; "
-        f"$s.Description = {winapi._ps_quote(tr('RansomGuard 控制台', 'RansomGuard control panel'))}; $s.Save()")
+               f"$s.TargetPath = {winapi._ps_quote(exe)}; $s.Arguments = {winapi._ps_quote(shortcut_args)}; "
+               f"$s.WorkingDirectory = {winapi._ps_quote(workdir)}; $s.IconLocation = {winapi._ps_quote(icon + ',0')}; "
+               f"$s.Description = {winapi._ps_quote(tr('RansomGuard 控制台', 'RansomGuard control panel'))}; $s.Save()")
     # Windows caches icons per file path, and the installed path never changes: tell the shell the exe
     # changed and refresh the cache, so the shortcut doesn't keep showing an older version's icon
     if config.IS_WINDOWS:
@@ -338,11 +339,12 @@ def uninstall(report=print) -> bool:
     report(tr("停止監控...", "Stopping monitoring..."))
     stop_monitor()
     _, _, err = winapi._ps(f"Unregister-ScheduledTask -TaskName {winapi._ps_quote(config.TASK_NAME)} "
-                    "-Confirm:$false -ErrorAction SilentlyContinue")
+                           "-Confirm:$false -ErrorAction SilentlyContinue")
     if task_state():
         report(tr(f"刪除排程工作失敗：{err}", f"Failed to delete the scheduled task: {err}"))
         return False
-    winapi._ps(f"Unregister-ScheduledTask -TaskName {winapi._ps_quote(HEALTH_TASK)} -Confirm:$false -ErrorAction SilentlyContinue")
+    winapi._ps(f"Unregister-ScheduledTask -TaskName {winapi._ps_quote(HEALTH_TASK)} "
+               "-Confirm:$false -ErrorAction SilentlyContinue")
     report(tr("已刪除排程工作", "Scheduled task deleted"))
     desktop_lnk().unlink(missing_ok=True)
     canary.remove_canaries()

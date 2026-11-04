@@ -55,7 +55,7 @@ Any one of these triggers it:
 | **Ransom notes** | Files such as `HOW_TO_DECRYPT.txt` appear in several folders within a short time |
 | **Dangerous commands** | A program deletes restore points, disables boot recovery, deletes backups, clears event logs or turns off Defender. The command is ended immediately and the program that started it is paused, because ransomware usually does this just before it starts encrypting |
 
-**Watched folders:** Desktop, Documents, Pictures, Downloads, Videos, Music, plus any folder you add with **Watched folders…** at the bottom of the control panel (another drive, a USB drive, a NAS). System folders and the whole system drive can't be added: they change all the time.
+**Watched folders:** Desktop, Documents, Pictures, Downloads, Videos, Music, plus any folder you add with **Watched folders…** at the bottom of the control panel (another drive, a USB drive, a NAS). A USB drive or NAS that isn't connected is watched as soon as it is (within a minute). System folders and the whole system drive can't be added: they change all the time.
 
 **Downloads are checked too:** new programs, scripts and archives (`.exe`, `.msi`, `.js`, `.zip`...) in Downloads or directly on the Desktop are scanned with Microsoft Defender once they finish downloading. If Defender finds a threat, a message tells you. This doesn't cut the network, because Defender removes the file.
 

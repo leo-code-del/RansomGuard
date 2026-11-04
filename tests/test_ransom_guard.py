@@ -178,6 +178,11 @@ class TempDirTest(unittest.TestCase):
         # processes a test started (and registered for cleanup later) have been ended and no longer lock files
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
 
+    def patch(self, name, value):
+        p = mock.patch.object(rg, name, value)
+        p.start()
+        self.addCleanup(p.stop)
+
     def file(self, name, data):
         p = self.dir / name
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -343,6 +348,7 @@ class DangerousCommandTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------- event handler
+import watchdog.observers  # noqa: E402
 from watchdog.events import (FileCreatedEvent, FileDeletedEvent,  # noqa: E402
                              FileModifiedEvent, FileMovedEvent)
 
@@ -1128,11 +1134,6 @@ WIN = os.environ.get("SystemRoot", r"C:\Windows")
 
 
 class PauseTests(TempDirTest):
-    def patch(self, name, value):
-        p = mock.patch.object(rg, name, value)
-        p.start()
-        self.addCleanup(p.stop)
-
     def fake_writers(self, rows, paths):
         """write_counters() sees `rows` [(pid, name)] each write 100 times / 1 MB during the sample."""
         counters = iter([{}, {pid: (name, 100, 10 ** 6) for pid, name in rows}])
@@ -1515,6 +1516,75 @@ class MonitorLoopTests(TempDirTest):
         pm.dead = True
         self.wait_for(lambda: pm.starts >= 2)
         self.assertEqual(pm.starts, 2)
+
+    def test_the_response_does_not_hold_up_the_monitor_that_found_it(self):
+        # the response lasts until the warning is closed; meanwhile the process monitor must go on stopping
+        # dangerous commands
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def respond(reason, dry_run):  # like the warning staying open
+            self.triggered.append(reason)
+            release.wait(30)
+        self.patch("respond", respond)
+        self.start()
+        t0 = time.time()
+        StubProcessMonitor.instances[0].on_hit("A process is deleting restore points")
+        self.assertLess(time.time() - t0, 1)
+        self.wait_for(lambda: self.triggered)
+        self.assertEqual(self.triggered, ["A process is deleting restore points"])
+
+    def start_with(self, *dirs):
+        """Start the monitor on these folders, with a recorded file monitor."""
+        observers = []
+
+        class RecordingObserver(watchdog.observers.Observer):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                observers.append(self)
+        self.patch("REWATCH_INTERVAL", 0)
+        p = mock.patch("watchdog.observers.Observer", RecordingObserver)
+        p.start()
+        self.addCleanup(p.stop)
+        self.stop = threading.Event()
+        t = threading.Thread(target=rg.run, args=(argparse.Namespace(watch=[str(d) for d in dirs], dry_run=False),
+                                                  self.stop), daemon=True)
+        t.start()
+        self.addCleanup(lambda: (self.stop.set(), t.join(15)))
+        self.wait_for(lambda: observers and observers[-1].is_alive())
+        return observers[-1]
+
+    @staticmethod
+    def watcher(obs, folder):
+        return next((e for e in obs.emitters if rg.norm(e.watch.path) == rg.norm(folder) and e.is_alive()), None)
+
+    def test_a_folder_whose_watcher_stopped_is_watched_again(self):
+        usb = self.dir / "usb"
+        usb.mkdir()
+        obs = self.start_with(self.watch, usb)
+        gone = self.watcher(obs, usb)
+        gone.stop()  # what happens when a watched USB drive is unplugged
+        gone.join(5)
+        self.wait_for(lambda: self.watcher(obs, usb) not in (None, gone))
+        self.assertIsNotNone(self.watcher(obs, usb), "not watched again")
+        self.assertIsNotNone(self.watcher(obs, self.watch), "the other folder stopped being watched")
+        overwrite(usb / rg.CANARY_NAMES[0], b"encrypted")
+        self.wait_for(lambda: self.triggered)
+        self.assertIn("Canary file", self.triggered[0][0])
+
+    def test_a_folder_that_appears_later_gets_canaries_and_is_watched(self):
+        usb = self.dir / "usb"  # not plugged in when the monitor starts
+        obs = self.start_with(self.watch, usb)
+        usb.mkdir()
+        canary = usb / rg.CANARY_NAMES[0]
+        self.wait_for(lambda: self.watcher(obs, usb) is not None)
+        self.assertEqual(canary.read_bytes(), rg.canary_bytes(canary))
+        self.assertIn(str(canary), rg.canary_record())
+        time.sleep(0.5)
+        self.assertEqual(self.triggered, [], "planting the canary files triggered")
+        overwrite(canary, b"encrypted")
+        self.wait_for(lambda: self.triggered)
+        self.assertIn("Canary file", self.triggered[0][0])
 
     def run_once(self):
         """Start the monitor and let it end right after starting."""

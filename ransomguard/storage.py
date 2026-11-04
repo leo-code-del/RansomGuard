@@ -154,7 +154,7 @@ def secure_state_dir():
     for path in [str(d), *files]:
         winapi._run([icacls, path, "/setowner", "*S-1-5-32-544", "/C", "/Q"])
     winapi._run([icacls, str(d), "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F",
-          f"{user}:(OI)(CI)RX", "/Q"])
+                 f"{user}:(OI)(CI)RX", "/Q"])
     for path in files:  # they take the folder's permissions
         winapi._run([icacls, path, "/reset", "/C", "/Q"])
     _state_secured = True

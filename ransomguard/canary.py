@@ -171,9 +171,9 @@ def plant_canaries(dirs, upgrade=False):
                                    "Canary file content is not what was expected "
                                    "(changed while the program was not running?): %s"), p)
                     winapi.alert(tr("RansomGuard 注意", "RansomGuard notice"),
-                          tr(f"誘餌檔在程式沒執行時被修改過：\n{p}\n\n請確認電腦是否異常。",
-                             f"A canary file was modified while the program was not running:\n{p}\n\n"
-                             "Please check whether something is wrong with this computer."))
+                                 tr(f"誘餌檔在程式沒執行時被修改過：\n{p}\n\n請確認電腦是否異常。",
+                                    f"A canary file was modified while the program was not running:\n{p}\n\n"
+                                    "Please check whether something is wrong with this computer."))
                 if data is None or not canary_intact(p, data) or (upgrade and data != canary_bytes(p)):
                     _write_canary(p)
                 else:

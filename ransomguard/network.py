@@ -13,13 +13,13 @@ def disconnect_network() -> bool:
     st = storage.load_state()
     try:
         _, out, _ = winapi._ps("Get-NetAdapter | Where-Object {$_.Status -ne 'Disabled'} "
-                        "| ForEach-Object {$_.Name}")
+                               "| ForEach-Object {$_.Name}")
         names = [line.strip() for line in out.splitlines() if line.strip()]
         st["disabled_adapters"] = sorted(set(st.get("disabled_adapters", []) + names))
         st["triggered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         storage.save_state(st)
         rc, _, err = winapi._ps("Get-NetAdapter | Where-Object {$_.Status -ne 'Disabled'} "
-                         "| Disable-NetAdapter -Confirm:$false")
+                                "| Disable-NetAdapter -Confirm:$false")
         if rc != 0:
             log.error(tr("停用網路卡時出現錯誤：%s", "Error while disabling network adapters: %s"), err)
     except Exception:
@@ -61,7 +61,7 @@ def block_firewall():
             st["firewall"] = saved if isinstance(saved, list) else [saved]
             storage.save_state(st)
         rc, _, err = winapi._ps("Set-NetFirewallProfile -All -Enabled True "
-                         "-DefaultInboundAction Block -DefaultOutboundAction Block")
+                                "-DefaultInboundAction Block -DefaultOutboundAction Block")
         if rc == 0:
             log.critical(tr("已用防火牆封鎖所有進出連線", "Firewall now blocks all inbound and outbound connections"))
         else:
@@ -123,8 +123,8 @@ def restore_network(report=print) -> bool:
         report(tr("沒有被本程式停用的網路卡。", "No network adapters were disabled by this program."))
     for p in st.get("firewall") or []:
         r = winapi._ps(f"Set-NetFirewallProfile -Name {winapi._ps_quote(p['Name'])} "
-                f"-Enabled {winapi._ps_quote(p['Enabled'])} -DefaultInboundAction {winapi._ps_quote(p['In'])} "
-                f"-DefaultOutboundAction {winapi._ps_quote(p['Out'])}")
+                       f"-Enabled {winapi._ps_quote(p['Enabled'])} -DefaultInboundAction {winapi._ps_quote(p['In'])} "
+                       f"-DefaultOutboundAction {winapi._ps_quote(p['Out'])}")
         if r[0] == 0:
             log.info(tr("已還原防火牆設定：%s", "Firewall settings restored: %s"), p["Name"])
             report(tr(f"  已還原防火牆設定 {p['Name']}", f"  Restored firewall settings for {p['Name']}"))

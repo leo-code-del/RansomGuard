@@ -150,6 +150,6 @@ class DownloadScanner:
     def _alert(path):
         config.init_lang()  # the language most recently chosen in the control panel (the monitor may predate it)
         winapi.alert(tr("RansomGuard：Defender 發現威脅", "RansomGuard: Defender found a threat"),
-              tr(f"新檔案含有威脅：\n{path}\n\nMicrosoft Defender 正在處理（通常會隔離或刪除）。請不要開啟這個檔案。",
-                 f"A new file contains a threat:\n{path}\n\nMicrosoft Defender is handling it (it usually "
-                 "quarantines or deletes it). Do not open this file."))
+                     tr(f"新檔案含有威脅：\n{path}\n\nMicrosoft Defender 正在處理（通常會隔離或刪除）。請不要開啟這個檔案。",
+                        f"A new file contains a threat:\n{path}\n\nMicrosoft Defender is handling it (it usually "
+                        "quarantines or deletes it). Do not open this file."))

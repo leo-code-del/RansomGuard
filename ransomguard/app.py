@@ -9,6 +9,10 @@ from . import canary, config, defender, detection, folders, gui, install, networ
 from .config import log, tr
 
 
+# how often (seconds) folders that aren't watched are looked for: looking up a NAS that is off can take a while
+REWATCH_INTERVAL = 60
+
+
 def run(args, stop=None):
     """The monitor. stop: an Event that ends it (tests); it otherwise runs until Windows ends it."""
     winapi.exit_with_launcher()
@@ -46,13 +50,13 @@ def run(args, stop=None):
         st["reminded"] = winapi.boot_time()
         storage.save_state(st)
         winapi.alert(tr("RansomGuard 提醒", "RansomGuard reminder"),
-              tr(f"上次在 {st['triggered_at']} 偵測到疑似勒索病毒並切斷了網路。\n"
-                 f"確認電腦安全後，{install.restore_hint()}。",
-                 f"Possible ransomware was detected at {st['triggered_at']} and the network was cut off.\n"
-                 f"Once you're sure the computer is safe, {install.restore_hint()}."))
+                     tr(f"上次在 {st['triggered_at']} 偵測到疑似勒索病毒並切斷了網路。\n"
+                        f"確認電腦安全後，{install.restore_hint()}。",
+                        f"Possible ransomware was detected at {st['triggered_at']} and the network was cut off.\n"
+                        f"Once you're sure the computer is safe, {install.restore_hint()}."))
 
-    watch_dirs = [Path(p) for p in args.watch] if args.watch else folders.default_watch_dirs() + folders.extra_watch_dirs()
-    watch_dirs = [d for d in watch_dirs if d.is_dir()]
+    wanted = [Path(p) for p in args.watch] if args.watch else folders.default_watch_dirs() + folders.extra_watch_dirs()
+    watch_dirs = [d for d in wanted if d.is_dir()]  # the others (e.g. a USB drive not plugged in) are added when they appear
     if not watch_dirs:
         log.error(tr("沒有可監控的資料夾", "No folders to watch"))
         sys.exit(1)
@@ -70,15 +74,20 @@ def run(args, stop=None):
                     log.error(tr("全螢幕警告異常結束（代碼 %s）", "Full-screen warning ended abnormally (code %s)"),
                               proc.returncode)
                     winapi.alert(tr("RansomGuard：偵測到疑似勒索病毒，網路已切斷",
-                             "RansomGuard: possible ransomware detected, network cut off"), reason)
+                                    "RansomGuard: possible ransomware detected, network cut off"), reason)
             # monitoring goes on (it doesn't trigger a second time): dangerous commands are still stopped and
             # the programs behind them paused while the network is cut
+
+    def trigger(reason):
+        # in a thread of its own: the response lasts until the warning is closed, and the thread that found
+        # the problem (the process monitor, the file monitor, the periodic check) has to go on working
+        threading.Thread(target=on_trigger, args=(reason,), daemon=True).start()
 
     scanner = None
     if config.DEFENDER_SCAN_DOWNLOADS and config.IS_WINDOWS and defender.MPCMDRUN.is_file():
         scanner = defender.DownloadScanner()
         scanner.start()
-    handler = detection.make_handler(canaries, on_trigger, args.dry_run, scanner.add if scanner else None)
+    handler = detection.make_handler(canaries, trigger, args.dry_run, scanner.add if scanner else None)
 
     def start_observer():
         obs = Observer()
@@ -87,6 +96,27 @@ def run(args, stop=None):
                 obs.schedule(handler, str(d), recursive=True)
         obs.start()
         return obs
+
+    def unwatched():
+        """Folders to watch that exist but have no working watcher: a watched USB drive that was unplugged
+        (its watcher stops) and plugged in again, or one that wasn't there when the monitor started."""
+        live = {winapi.norm(e.watch.path) for e in observer.emitters if e.is_alive()}
+        return [d for d in wanted if winapi.norm(d) not in live and d.is_dir()]  # only those are looked up
+
+    def watch_again(dirs):
+        known = {winapi.norm(d) for d in watch_dirs}
+        new = [d for d in dirs if winapi.norm(d) not in known]
+        if new:  # canary files first, before the folder is watched, so planting them is no file event
+            added = canary.plant_canaries(new, upgrade=not args.dry_run)
+            canaries.extend(added)
+            handler.canaries.update(winapi.norm(p) for p in added)
+            watch_dirs.extend(new)
+        again = {winapi.norm(d) for d in dirs}
+        for e in list(observer.emitters):
+            if winapi.norm(e.watch.path) in again:
+                observer.unschedule(e.watch)  # the stopped watcher; a new one takes its place
+        for d in dirs:
+            observer.schedule(handler, str(d), recursive=True)
 
     observer = start_observer()
     procmon = None
@@ -102,7 +132,7 @@ def run(args, stop=None):
              "; ".join(str(d) for d in watch_dirs))
     log.info(tr("誘餌檔：%s", "Canary files: %s"), "; ".join(str(p) for p in canaries))
     try:
-        last = pruned = time.time()
+        last = pruned = probed = time.time()
         while not stop.wait(1):
             if time.time() - last < config.CHECK_INTERVAL:
                 continue
@@ -111,15 +141,26 @@ def run(args, stop=None):
             if last - pruned > 86400:  # the monitor can run for weeks: keep the log to LOG_KEEP_DAYS anyway
                 pruned = last
                 storage.prune_own_log()
-            # restart a monitor component that stopped unexpectedly (e.g. a watched USB drive was unplugged), up
-            # to 10 times an hour, so a crash loop doesn't spin but a drive coming and going isn't fatal either
+            # restart a monitor component that stopped unexpectedly and watch folders that came back, up to 10
+            # times an hour, so a crash loop doesn't spin but a drive coming and going isn't fatal either
             if last - restarts_since > 3600:
                 restarts, restarts_since = 0, last
-            if restarts < 10 and not observer.is_alive():
-                restarts += 1
-                log.error(tr("檔案監控意外停止，重新啟動（第 %d 次）",
-                             "File monitor stopped unexpectedly; restarting (attempt %d)"), restarts)
-                observer = start_observer()
+            try:
+                if restarts < 10 and not observer.is_alive():
+                    restarts += 1
+                    log.error(tr("檔案監控意外停止，重新啟動（第 %d 次）",
+                                 "File monitor stopped unexpectedly; restarting (attempt %d)"), restarts)
+                    observer = start_observer()
+                elif restarts < 10 and last - probed >= REWATCH_INTERVAL:
+                    probed = last
+                    again = unwatched()
+                    if again:
+                        restarts += 1
+                        log.warning(tr("開始監控（再次）出現的資料夾：%s", "Watching folders that (re)appeared: %s"),
+                                    "; ".join(str(d) for d in again))
+                        watch_again(again)
+            except OSError as ex:  # the folder went away again in between; tried again next time
+                log.error(tr("無法監控資料夾：%s", "Could not watch a folder: %s"), ex)
             if restarts < 10 and procmon is not None and not procmon.alive():
                 restarts += 1
                 log.error(tr("程序監控意外停止，重新啟動（第 %d 次）",
@@ -172,8 +213,8 @@ def main():
     storage.setup_logging()
     if args.test_alert:
         response.fullscreen_alert(tr("這是警告畫面的預覽（--test-alert），沒有偵測到任何東西",
-                            "This is a preview of the warning (--test-alert); nothing was detected"),
-                         "test", wait=True)
+                                     "This is a preview of the warning (--test-alert); nothing was detected"),
+                                  "test", wait=True)
     elif args.restore:
         network.restore_network(log.info)
     elif args.install:
