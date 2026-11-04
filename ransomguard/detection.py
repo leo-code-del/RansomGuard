@@ -317,9 +317,10 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
     class Guard(FileSystemEventHandler):
         def __init__(self):
             self.canaries = {norm(p) for p in canaries}
-            self.broken = deque()   # (time, path)
+            self.broken = deque()   # (time, normalized path, path)
             self.extchg = deque()
-            self.notes = deque()    # (time, folder)
+            self.notes = deque()    # (time, normalized folder, the note in it)
+            self.last_files = []    # the files counted when it last triggered
             self.checked = {}       # path -> ((size, mtime), monotonic time it was last checked)
             self.lock = threading.Lock()
             self.triggered_at = None
@@ -338,6 +339,11 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
                     if not dry_run or now - self.triggered_at < 10:
                         return
                 self.triggered_at = now
+                # the evidence, for the warning and the detection report: the files counted, most recent last
+                files = []
+                for q in (self.broken, self.extchg, self.notes):
+                    files += [item[2] for item in q if item[2] not in files]
+                self.last_files = files[-50:]
                 self.broken.clear()
                 self.extchg.clear()
                 self.notes.clear()
@@ -346,10 +352,10 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
         def _count(self, q, key, threshold, label, example):
             now = time.time()
             with self.lock:
-                q.append((now, norm(key)))
+                q.append((now, norm(key), example))
                 while q and now - q[0][0] > config.WINDOW_SEC:
                     q.popleft()
-                n = len({k for _, k in q})
+                n = len({item[1] for item in q})
             if n >= threshold:
                 self.fire(tr(f"{config.WINDOW_SEC} 秒內有 {n} 個{label}（例如 {example}）",
                              f"{n} {label} within {config.WINDOW_SEC} seconds (e.g. {example})"))
@@ -511,7 +517,7 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
         def _pair(self, folder, new=None):
             key, now = norm(folder), time.time()
             with self.lock:
-                if new is not None and any(k == norm(new) for _, k in self.broken):
+                if new is not None and any(item[1] == norm(new) for item in self.broken):
                     return  # counted already
                 if len(self.deleted) + len(self.unknown) > 512:  # folders with nothing recent: forget them
                     for d in (self.deleted, self.unknown):

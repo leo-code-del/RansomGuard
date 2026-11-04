@@ -87,7 +87,7 @@ Windows 10 / 11 · 英文與中文(繁體)介面 · [所有版本](https://githu
 | --- | --- | --- |
 | **防護** | **安裝並開始監控** | 用正在執行的版本安裝背景監控並立即啟動，不連到 GitHub |
 | | **停止監控** | 停止監控，直到你按 **安裝並開始監控** 或重新開機 |
-| | **恢復網路並重新開啟監控** | 誤判後恢復網路 |
+| | **恢復網路並重新開啟監控** | 誤判後恢復網路。網路被切斷期間，控制台會顯示偵測報告（為什麼觸發、哪些檔案被判定像被加密、暫停了哪些程式），按這個按鈕時確認視窗也會列出，方便你判斷是誤判還是真的中毒 |
 | **工具** | **檢查版本更新** | 向 GitHub 查詢有沒有新版本並告訴你結果；有新版時會詢問是否更新 |
 | | **預覽警告畫面** | 看看觸發時的警告長什麼樣子，不會斷網 |
 | | **開啟紀錄檔** | 開啟 `%LOCALAPPDATA%\RansomGuard\guard.log`（超過 30 天的紀錄會被刪除） |
@@ -144,7 +144,7 @@ RansomGuard.exe --lang en    這次用英文介面（zh＝中文(繁體)）
 | --- | --- |
 | 每個監控的資料夾 | 3 個隱藏的誘餌檔（`0000 Scan index.docx`、`Household budget.xlsx`、`ZZ Archive notes.docx`） |
 | `%LOCALAPPDATA%\RansomGuard\` | `guard.log`（最多 4 個、每個 1 MB，超過 30 天的紀錄會被刪除）、`settings.json`（語言、是否自動檢查新版本） |
-| `C:\ProgramData\RansomGuard\` | `state.json`（切斷或暫停了什麼）、`canaries.json`（建立了哪些誘餌檔）、`watch.json`（你加入的資料夾）、`monitor_stopped`（你什麼時候停止了監控）。只有系統管理員能修改這個資料夾，你的帳號只能讀取 |
+| `C:\ProgramData\RansomGuard\` | `state.json`（切斷或暫停了什麼，以及偵測報告：為什麼觸發、最多 50 個被判定像被加密的檔案，保留到你恢復網路為止）、`canaries.json`（建立了哪些誘餌檔）、`watch.json`（你加入的資料夾）、`monitor_stopped`（你什麼時候停止了監控）。只有系統管理員能修改這個資料夾，你的帳號只能讀取 |
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`、`icon.ico`、`health_check.js` |
 | `%TEMP%` | exe 執行時會把自己解壓縮到一個 `_MEI…` 資料夾，結束時刪除。`MpCmdRun.log` 是 Microsoft Defender 的掃描程式為 RansomGuard 要求的掃描所留的紀錄 |
 | 桌面 | 「RansomGuard」捷徑 |

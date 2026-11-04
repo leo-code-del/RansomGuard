@@ -276,11 +276,15 @@ def gui(auto_update=False):
         w["pump"] = root.after(100, pump)
 
     def on_restore():
-        if storage.network_cut(storage.load_state()) and not messagebox.askyesno(
+        st = storage.load_state()
+        report_text = "\n".join(storage.incident_lines(st, limit=5))
+        if storage.network_cut(st) and not messagebox.askyesno(
                 tr("恢復網路", "Restore network"),
-                tr("請先確認這次是測試或誤判，而不是真的中了勒索病毒。\n\n確定要恢復網路嗎？",
-                   "First make sure this was a test or a false alarm, not a real ransomware "
-                   "infection.\n\nRestore the network?"),
+                (report_text + "\n\n" if report_text else "")
+                + tr("請先確認這次是測試或誤判，而不是真的中了勒索病毒：例如上面的檔案是不是你自己剛剛在處理的。"
+                     "\n\n確定要恢復網路嗎？",
+                     "First make sure this was a test or a false alarm, not a real ransomware infection: for example, "
+                     "whether you were working on the files above yourself.\n\nRestore the network?"),
                 icon="warning"):
             return
         run_bg(network.restore_network)
@@ -607,9 +611,16 @@ def gui(auto_update=False):
         out.pack(fill="both", expand=True)  # takes up any spare room of the fixed-size window
         out.tag_config("hint", foreground=C["muted"])
         out.tag_config("err", foreground=C["bad"])
-        write(tr("按上方按鈕執行操作，進度會顯示在這裡。滑鼠停在按鈕上可以看到說明。",
-                 "Click a button above; progress is shown here. Rest the mouse on a button for what it does."),
-              "hint")
+        report_lines = storage.incident_lines(storage.load_state())
+        if report_lines:  # the network is cut: say why, so the user can tell a false alarm from a real attack
+            write(tr("偵測報告", "Detection report"), "err")
+            for line in report_lines:
+                write(line)
+            out.see("1.0")  # from the top: why it triggered comes first
+        else:
+            write(tr("按上方按鈕執行操作，進度會顯示在這裡。滑鼠停在按鈕上可以看到說明。",
+                     "Click a button above; progress is shown here. Rest the mouse on a button for what it does."),
+                  "hint")
 
         foot = tk.Frame(body, bg=C["bg"])
         foot.pack(fill="x", pady=(px(10), 0))

@@ -135,9 +135,9 @@ if (-not $script:ack) { exit 3 }  # not closed by the user's button (e.g. closed
 '''
 
 
-def fullscreen_alert(reason: str, status: str, wait: bool = False, paused=()):
+def fullscreen_alert(reason: str, status: str, wait: bool = False, paused=(), files=()):
     """Full-screen warning. status: cut (network cut) / partial (cut may be incomplete) / test.
-    paused: the programs pause_writers() found."""
+    paused: the programs pause_writers() found; files: the files that looked encrypted."""
     log.warning(tr("[全螢幕警告] %s（%s）", "[Full-screen warning] %s (%s)"), reason, status)
     if not config.IS_WINDOWS:
         return None
@@ -145,6 +145,10 @@ def fullscreen_alert(reason: str, status: str, wait: bool = False, paused=()):
         reason = reason if len(reason) <= 160 else reason[:157] + "..."
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         detail = tr(f"偵測時間：{now}\n原因：{reason}", f"Detected at: {now}\nReason: {reason}")
+        if files:
+            names = tr("、", ", ").join(os.path.basename(f) for f in list(files)[-3:])
+            more = tr(f" 等 {len(files)} 個", f" and {len(files) - 3} more") if len(files) > 3 else ""
+            detail += "\n" + tr(f"像被加密的檔案：{names}{more}", f"Files that look encrypted: {names}{more}")
         if paused:
             detail += "\n" + tr("可疑的程式：", "Suspicious programs: ") + tr("、", ", ").join(
                 tr(f"{p['name']}（PID {p['pid']}，{p['result']}）", f"{p['name']} (PID {p['pid']}, {p['result']})")
@@ -373,8 +377,23 @@ def pause_ancestors(ppid: int, dry_run: bool) -> list:
     return found
 
 
-def respond(reason: str, dry_run: bool):
-    """Handle a trigger. Returns the full-screen warning process (may be None)."""
+def record_incident(reason: str, files):
+    """Keep the detection report (why, which files) until the network is restored, for the control panel. Never
+    raises: nothing may stop the network from being cut."""
+    try:
+        st = storage.load_state()
+        st["incident"] = {"reason": reason, "files": list(files)}
+        storage.save_state(storage.clean_state(st))
+    except OSError:
+        log.exception(tr("無法記錄偵測報告", "Could not record the detection report"))
+    if files:
+        log.critical(tr("被判定像被加密的檔案（%d 個）：%s", "Files that looked encrypted (%d): %s"), len(files),
+                     "; ".join(files))
+
+
+def respond(reason: str, dry_run: bool, files=()):
+    """Handle a trigger. files: the files that were counted (the evidence). Returns the full-screen warning process
+    (may be None)."""
     config.init_lang()  # use the language most recently chosen in the control panel (the monitor may predate the change)
     log.critical(tr("偵測到疑似勒索病毒行為：%s", "Possible ransomware behavior detected: %s"), reason)
     # pause the encrypting program before anything else: every second it keeps running costs files
@@ -386,13 +405,14 @@ def respond(reason: str, dry_run: bool):
     if dry_run:
         log.warning(tr("[測試模式] 正式模式下，此時會切斷網路",
                        "[Test mode] In normal mode the network would be cut off now"))
-        return fullscreen_alert(reason, "test", paused=found)
+        return fullscreen_alert(reason, "test", paused=found, files=files)
     record_paused(found)
+    record_incident(reason, files)
     if config.DEFENDER_SCAN_ON_TRIGGER and config.IS_WINDOWS:
         threading.Thread(target=defender.ask_defender, args=([p["path"] for p in found if p["path"]],),
                          daemon=True).start()
     ok = network.disconnect_network()
-    proc = fullscreen_alert(reason, "cut" if ok else "partial", paused=found)
+    proc = fullscreen_alert(reason, "cut" if ok else "partial", paused=found, files=files)
     if config.HIBERNATE_ON_TRIGGER:
         log.critical(tr("依設定立即休眠", "Hibernating now, as configured"))
         time.sleep(3)  # let the warning appear first, so it is there after waking up

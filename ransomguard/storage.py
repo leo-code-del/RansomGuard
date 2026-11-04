@@ -190,7 +190,31 @@ def clean_state(st: dict) -> dict:
                           "paused": bool(p.get("paused")), "result": str(p.get("result", ""))[:100]}
                          for p in st["paused"] if isinstance(p, dict) and isinstance(p.get("pid"), int)
                          and not isinstance(p.get("pid"), bool) and p["pid"] > 0]
+    inc = st.get("incident")
+    if isinstance(inc, dict) and isinstance(inc.get("reason"), str):
+        files = inc.get("files") if isinstance(inc.get("files"), list) else []
+        out["incident"] = {"reason": inc["reason"][:500],
+                           "files": [f[:1024] for f in files if isinstance(f, str) and f][:50]}
     return out
+
+
+def incident_lines(st: dict, limit=10) -> list:
+    """The detection report of the last trigger, as lines of text: why, and the files that looked encrypted (up to
+    `limit`), the programs that were paused. [] when there is none."""
+    inc = st.get("incident")
+    if not inc:
+        return []
+    lines = [tr(f"偵測原因：{inc['reason']}", f"Why: {inc['reason']}")]
+    files = inc.get("files") or []
+    if files:
+        lines.append(tr(f"被判定像被加密的檔案（{len(files)} 個）：", f"Files that looked encrypted ({len(files)}):"))
+        lines += [f"  {f}" for f in files[:limit]]
+        if len(files) > limit:
+            lines.append(tr(f"  ……還有 {len(files) - limit} 個（詳見紀錄檔）", f"  ...and {len(files) - limit} more (see the log)"))
+    paused = [p for p in st.get("paused", []) if p.get("paused")]
+    if paused:
+        lines.append(tr("被暫停的程式：", "Programs paused: ") + ", ".join(f"{p['name']} (PID {p['pid']})" for p in paused))
+    return lines
 
 
 def load_state() -> dict:

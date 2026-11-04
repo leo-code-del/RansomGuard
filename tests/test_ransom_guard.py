@@ -514,6 +514,13 @@ class HandlerTests(TempDirTest):
         self.h.on_any_event(FileModifiedEvent(self.file("last.docx", random_bytes())))
         self.assertEqual(len(self.fired), 1)
 
+    def test_the_evidence_is_kept_when_it_triggers(self):
+        paths = [self.file(f"Report {i}.docx", random_bytes()) for i in range(rg.BROKEN_THRESHOLD)]
+        for p in paths:
+            self.h.on_any_event(FileModifiedEvent(p))
+        self.assertEqual(len(self.fired), 1)
+        self.assertEqual(self.h.last_files, paths, "the files as they are named, most recent last")
+
     def test_same_file_many_events_counts_once(self):
         p = self.file("one.docx", random_bytes())
         for _ in range(50):
@@ -1387,14 +1394,19 @@ class PauseTests(TempDirTest):
         self.patch("IS_WINDOWS", True)
         self.patch("pause_writers", lambda dry_run: [evil])
         self.patch("disconnect_network", lambda: True)
-        self.patch("fullscreen_alert", lambda reason, status, paused=(): alerts.append((status, paused)))
+        self.patch("fullscreen_alert", lambda reason, status, paused=(), files=(): alerts.append((status, paused, files)))
         self.patch("ask_defender", lambda paths: (asked.append(paths), done.set()))
         self.addCleanup(rg.init_lang, "en")
-        rg.respond("test", dry_run=False)
+        rg.respond("test", dry_run=False, files=[r"C:\d\a.docx", r"C:\d\b.pdf"])
         done.wait(5)
         self.assertEqual(rg.load_state()["paused"], [evil])
+        self.assertEqual(rg.load_state()["incident"], {"reason": "test", "files": [r"C:\d\a.docx", r"C:\d\b.pdf"]})
         self.assertEqual(asked, [[r"C:\x\evil.exe"]])
-        self.assertEqual(alerts, [("cut", [evil])])
+        self.assertEqual(alerts, [("cut", [evil], [r"C:\d\a.docx", r"C:\d\b.pdf"])])
+        lines = rg.incident_lines(rg.load_state())
+        self.assertEqual(lines[0], "Why: test")
+        self.assertIn(r"  C:\d\b.pdf", lines)
+        self.assertIn("Programs paused: evil.exe (PID 7)", lines)
 
     def test_trigger_cuts_the_network_even_if_the_state_cannot_be_saved(self):
         cut = []
@@ -1404,10 +1416,10 @@ class PauseTests(TempDirTest):
                                                       "result": "paused"}])
         self.patch("save_state", mock.Mock(side_effect=OSError("disk full")))
         self.patch("disconnect_network", lambda: cut.append(1) or True)
-        self.patch("fullscreen_alert", lambda reason, status, paused=(): None)
+        self.patch("fullscreen_alert", lambda reason, status, paused=(), files=(): None)
         self.patch("ask_defender", lambda paths: None)
         self.addCleanup(rg.init_lang, "en")
-        rg.respond("test", dry_run=False)
+        rg.respond("test", dry_run=False, files=[r"C:\d\a.docx"])
         self.assertEqual(cut, [1])
 
     def test_false_alarm_resumes_only_clean_programs(self):
@@ -1478,7 +1490,7 @@ class PauseTests(TempDirTest):
         self.patch("IS_WINDOWS", True)
         self.patch("pause_writers", lambda dry_run: [dict(evil), {**evil, "pid": 41, "name": "other.exe"}])
         self.patch("disconnect_network", lambda: True)
-        self.patch("fullscreen_alert", lambda reason, status, paused=(): alerts.append(paused))
+        self.patch("fullscreen_alert", lambda reason, status, paused=(), files=(): alerts.append(paused))
         self.patch("ask_defender", lambda paths: None)
         self.addCleanup(rg.init_lang, "en")
         rg._early_paused.append(evil)
@@ -1668,7 +1680,7 @@ class MonitorLoopTests(TempDirTest):
                             ("exit_with_launcher", lambda: None), ("cleanup_old_files", lambda: None),
                             ("ProcessMonitor", StubProcessMonitor), ("DEFENDER_SCAN_DOWNLOADS", False),
                             ("CHECK_INTERVAL", 0),
-                            ("respond", lambda reason, dry_run: self.triggered.append((reason, dry_run)))):
+                            ("respond", lambda reason, dry_run, files=(): self.triggered.append((reason, dry_run, files)))):
             p = mock.patch.object(rg, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -1715,13 +1727,23 @@ class MonitorLoopTests(TempDirTest):
         self.wait_for(lambda: pm.starts >= 2)
         self.assertEqual(pm.starts, 2)
 
+    def test_the_files_that_looked_encrypted_reach_the_response(self):
+        self.start()
+        encrypted = [self.watch / f"photo{i}.jpg" for i in range(rg.BROKEN_THRESHOLD)]
+        for p in encrypted:
+            p.write_bytes(random_bytes())
+        self.wait_for(lambda: self.triggered)
+        reason, dry_run, files = self.triggered[0]
+        self.assertIn("files that look encrypted", reason)
+        self.assertEqual(sorted(rg.norm(f) for f in files), sorted(rg.norm(p) for p in encrypted))
+
     def test_the_response_does_not_hold_up_the_monitor_that_found_it(self):
         # the response lasts until the warning is closed; meanwhile the process monitor must go on stopping
         # dangerous commands
         release = threading.Event()
         self.addCleanup(release.set)
 
-        def respond(reason, dry_run):  # like the warning staying open
+        def respond(reason, dry_run, files=()):  # like the warning staying open
             self.triggered.append(reason)
             release.wait(30)
         self.patch("respond", respond)
@@ -1928,7 +1950,7 @@ class CommandLineTests(unittest.TestCase):
 
 # ---------------------------------------------------------------- the full-screen warning's content
 class WarningTests(unittest.TestCase):
-    def show(self, reason, status, paused=(), exit_code=None):
+    def show(self, reason, status, paused=(), exit_code=None, files=()):
         """Call the real fullscreen_alert() with PowerShell replaced; returns (process, shown info, args, alerts)."""
         seen, alerts = {}, []
 
@@ -1944,9 +1966,18 @@ class WarningTests(unittest.TestCase):
         with mock.patch.object(rg, "fullscreen_alert", REAL["fullscreen_alert"]), \
                 mock.patch.object(rg.subprocess, "Popen", FakeProc), mock.patch.object(rg, "IS_WINDOWS", True), \
                 mock.patch.object(rg, "alert", lambda title, msg: alerts.append(msg)):
-            proc = rg.fullscreen_alert(reason, status, paused=paused)
+            proc = rg.fullscreen_alert(reason, status, paused=paused, files=files)
         info = json.loads(base64.b64decode(seen["env"]["RG_ALERT_INFO"]).decode("utf-8"))
         return proc, info, seen["args"], alerts
+
+    def test_warning_names_a_few_of_the_files(self):
+        files = [rf"C:\Users\x\Documents\report{i}.docx" for i in range(9)]
+        _, info, args, _ = self.show("8 files that look encrypted", "cut", files=files)
+        self.assertIn("Files that look encrypted: report6.docx, report7.docx, report8.docx and 6 more",
+                      info["t"]["detail"])
+        self.assertNotIn("report8.docx", " ".join(args), "file names stay off the command line")
+        _, info, _, _ = self.show("Canary file was modified", "cut")
+        self.assertNotIn("Files that look encrypted", info["t"]["detail"])
 
     def test_warning_names_the_reason_and_the_paused_programs(self):
         evil = {"pid": 7, "name": "evil.exe", "path": r"C:\x\evil.exe", "paused": True, "result": "paused"}
@@ -2101,6 +2132,22 @@ class StateSecurityTests(TempDirTest):
         self.assertEqual([p["pid"] for p in st["paused"]], [40])
         self.assertNotIn("anything", st)
         self.assertEqual(rg.clean_state({}), {})
+
+    def test_the_detection_report_is_checked_and_capped(self):
+        st = rg.clean_state({"incident": {"reason": "r" * 900, "files": [r"C:\a.docx", 5, "", None, "p" * 2000]
+                                          + [rf"C:\f{i}.pdf" for i in range(80)], "extra": "x"}})
+        self.assertEqual(len(st["incident"]["reason"]), 500)
+        self.assertEqual(st["incident"]["files"][:2], [r"C:\a.docx", "p" * 1024])
+        self.assertEqual(len(st["incident"]["files"]), 50)
+        self.assertEqual(set(st["incident"]), {"reason", "files"})
+        for bad in ({"incident": "text"}, {"incident": {"files": ["a"]}}, {"incident": {"reason": 5}}):
+            self.assertNotIn("incident", rg.clean_state(bad))
+        self.assertEqual(rg.clean_state({"incident": {"reason": "why", "files": "a.docx"}})["incident"]["files"], [])
+        rg.init_lang("en")
+        lines = rg.incident_lines({"incident": {"reason": "why", "files": [f"f{i}" for i in range(12)]}}, limit=10)
+        self.assertEqual(lines[1], "Files that looked encrypted (12):")
+        self.assertEqual(lines[-1], "  ...and 2 more (see the log)")
+        self.assertEqual(rg.incident_lines({}), [])
 
     def test_state_lives_in_its_own_folder_and_an_old_one_is_moved_over_checked(self):
         state, app = self.dir / "ProgramData", self.dir / "LocalAppData"

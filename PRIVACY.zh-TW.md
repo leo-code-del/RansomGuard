@@ -15,7 +15,7 @@
 | 資料 | 位置 | 內容 | 保存多久 |
 | --- | --- | --- | --- |
 | 紀錄檔 | `%LOCALAPPDATA%\RansomGuard\guard.log`（以及 `.1` 到 `.3`） | 時間、看起來被加密的檔案名稱、被結束或暫停的程式（含命令列）、RansomGuard 做了什麼。檔案和資料夾名稱可能包含你的 Windows 使用者名稱或其他個人資訊 | RansomGuard 啟動時，以及監控期間每天，會刪除超過 30 天的紀錄；全部加起來最多 4 MB |
-| 狀態 | `C:\ProgramData\RansomGuard\state.json` | 什麼時候切斷了網路、要還原哪些網路卡和防火牆設定、暫停了哪些程式 | 恢復網路為止 |
+| 狀態 | `C:\ProgramData\RansomGuard\state.json` | 什麼時候切斷了網路、要還原哪些網路卡和防火牆設定、暫停了哪些程式、為什麼觸發，以及最多 50 個被判定像被加密的檔名 | 恢復網路為止 |
 | 誘餌檔紀錄、監控的資料夾、停止記號 | `C:\ProgramData\RansomGuard\`（`canaries.json`、`watch.json`、`monitor_stopped`） | 它建立的誘餌檔和你加入的資料夾的路徑；你什麼時候停止了監控 | 解除安裝為止 |
 | 設定 | `%LOCALAPPDATA%\RansomGuard\settings.json` | 介面語言、是否開啟自動檢查新版本 | 解除安裝為止 |
 | 誘餌檔 | 每個監控的資料夾（隱藏） | 說明這是什麼檔案的固定文字，沒有任何關於你的資料 | 解除安裝為止 |

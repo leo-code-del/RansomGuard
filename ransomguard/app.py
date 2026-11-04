@@ -49,11 +49,12 @@ def run(args, stop=None):
         # once per Windows start: the task may start the monitor again every few minutes
         st["reminded"] = winapi.boot_time()
         storage.save_state(st)
+        why = "\n".join(storage.incident_lines(st, limit=3))
         winapi.alert(tr("RansomGuard 提醒", "RansomGuard reminder"),
                      tr(f"上次在 {st['triggered_at']} 偵測到疑似勒索病毒並切斷了網路。\n"
-                        f"確認電腦安全後，{install.restore_hint()}。",
+                        f"{why}\n\n確認電腦安全後，{install.restore_hint()}。",
                         f"Possible ransomware was detected at {st['triggered_at']} and the network was cut off.\n"
-                        f"Once you're sure the computer is safe, {install.restore_hint()}."))
+                        f"{why}\n\nOnce you're sure the computer is safe, {install.restore_hint()}."))
 
     wanted = [Path(p) for p in args.watch] if args.watch else folders.default_watch_dirs() + folders.extra_watch_dirs()
     watch_dirs = [d for d in wanted if d.is_dir()]  # the others (e.g. a USB drive not plugged in) are added when they appear
@@ -64,8 +65,8 @@ def run(args, stop=None):
 
     stop = stop or threading.Event()
 
-    def on_trigger(reason):
-        proc = response.respond(reason, args.dry_run)
+    def on_trigger(reason, files=()):
+        proc = response.respond(reason, args.dry_run, files)
         if not args.dry_run:
             if proc is not None:
                 # wait for the user to close the warning, so it isn't closed together with this program
@@ -81,7 +82,7 @@ def run(args, stop=None):
     def trigger(reason):
         # in a thread of its own: the response lasts until the warning is closed, and the thread that found
         # the problem (the process monitor, the file monitor, the periodic check) has to go on working
-        threading.Thread(target=on_trigger, args=(reason,), daemon=True).start()
+        threading.Thread(target=on_trigger, args=(reason, list(handler.last_files)), daemon=True).start()
 
     scanner = None
     if config.DEFENDER_SCAN_DOWNLOADS and config.IS_WINDOWS and defender.MPCMDRUN.is_file():

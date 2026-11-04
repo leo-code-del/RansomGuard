@@ -91,6 +91,8 @@ def restore_network(report=print) -> bool:
     if st.get("triggered_at"):
         report(tr(f"RansomGuard 在 {st['triggered_at']} 切斷了網路。",
                   f"RansomGuard cut off the network at {st['triggered_at']}."))
+        for line in storage.incident_lines(st, limit=5):
+            report(line)
     installed = bool(install.task_state())
     report(tr("停止監控（避免重設誘餌檔時又觸發）...",
               "Stopping monitoring (so resetting canary files doesn't trigger it again)..."))
