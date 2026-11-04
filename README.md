@@ -48,7 +48,7 @@ Versions before 1.7.1 were built on the developer's computer and have no attesta
 
 ### If Windows Defender removes it
 
-Defender sometimes reports RansomGuard.exe as a threat (for example `Trojan:Win32/Bearfoos!ml`). The `!ml` means a machine-learning guess, not a known virus: programs packaged with PyInstaller that need administrator rights, stop processes and disable network adapters look suspicious to it. When that happens Defender also deletes the installed copy and its scheduled task, and protection stops. Since 1.7.0 a separate health check notices this: at sign-in and every day at noon it shows a message if protection is gone or monitoring is not running, and offers to open the download page or the control panel. It runs without opening a window and doesn't need RansomGuard.exe. Versions before 1.7.0 give no message, so check now and then that the control panel shows "Running".
+Defender sometimes reports RansomGuard.exe as a threat (for example `Trojan:Win32/Bearfoos!ml`). The `!ml` means a machine-learning guess, not a known virus: programs packaged with PyInstaller that need administrator rights, stop processes and disable network adapters look suspicious to it. When that happens Defender also deletes the installed copy and its scheduled task, and protection stops. Since 1.7.0 a separate health check notices this: five minutes after you sign in and every day at noon it shows a message if protection is gone or monitoring is not running, and offers to open the download page or the control panel. It runs without opening a window and doesn't need RansomGuard.exe. Versions before 1.7.0 give no message, so check now and then that the control panel shows "Running".
 
 1. Compare the file's SHA-256 with the one shown under Assets on the [release page](https://github.com/leo-code-del/RansomGuard/releases) (PowerShell: `Get-FileHash RansomGuard.exe`). Only continue if they match.
 2. Windows Security → Virus & threat protection → Protection history → select the item → **Restore** (or **Allow on device**).
@@ -84,41 +84,46 @@ New programs, scripts and archives (`.exe`, `.msi`, `.js`, `.zip`...) in Downloa
 
 ## What it does to your computer
 
-This section lists everything RansomGuard changes, so you can decide whether you trust it.
+This section lists everything RansomGuard changes, so you can decide whether you trust it. What it records about you, how long, and how to delete it is in the [privacy page](PRIVACY.md).
 
 **Permissions.** RansomGuard.exe asks for administrator rights (User Account Control) when it starts. The background monitor runs with administrator rights through a scheduled task that starts at every sign-in. The health check runs with normal user rights.
 
-**Files it reads.** It reads files that change in Desktop, Documents, Pictures, Downloads, Videos and Music. For common formats (Office files, PDF, pictures, videos, text files) it reads only the first 16 KB, to check whether the file looks encrypted. OneDrive files that are not downloaded yet are skipped. It does not read other drives or network drives.
+**Files it reads.** It reads files that change in Desktop, Documents, Pictures, Downloads, Videos and Music. For common formats (Office files, PDF, pictures, videos, text files) it reads only the first 16 KB, to check whether the file looks encrypted. OneDrive files that are not downloaded yet are skipped. It does not read other drives or network drives, unless you add them with `--watch`.
+
+**Programs it watches.** It reads the command line of every program that starts, to spot the dangerous commands listed above. Only those are written to the log. When it triggers, it also reads how much each running program has written.
 
 **Files and settings it creates or changes.**
 
 | Where | What |
 | --- | --- |
-| Documents and Pictures | Three canary files in each (`!!!_canary_do_not_delete.docx` and similar) |
-| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB), `state.json` (what was cut off or paused), `settings.json` (language) |
+| Documents and Pictures (or the folders given with `--watch`) | Three canary files in each (`!!!_canary_do_not_delete.docx` and similar) |
+| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `state.json` (what was cut off or paused), `settings.json` (language, automatic update checks) |
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`, `icon.ico`, `health_check.js` |
+| `%TEMP%` | A `_MEI…` folder the exe unpacks itself into while it runs, removed when it exits. `MpCmdRun.log`, the log Microsoft Defender's scanner keeps of the scans RansomGuard asks for |
 | Desktop | The "RansomGuard" shortcut |
 | Task Scheduler | The scheduled tasks "RansomGuard" and "RansomGuard Health Check" |
+| Windows' icon cache | Refreshed when installing, so the shortcut shows the current icon |
 
-**What it deletes.** It never deletes your own files. It deletes only what it created: its canary files (when the network is restored and on uninstall), files left by older versions, and on uninstall the desktop shortcut, both scheduled tasks and the whole `C:\Program Files\RansomGuard` folder.
+**What it deletes.** It never deletes your own files, with two exceptions listed under [Things that can go wrong](#known-limitations-and-risks): a file of yours named exactly like a canary file, and anything you put into `C:\Program Files\RansomGuard`. Otherwise it deletes only what it created: its canary files (when the network is restored and on uninstall), files left by older versions, log entries older than 30 days, the log when you click **Clear log**, and on uninstall the desktop shortcut, both scheduled tasks, the `C:\Program Files\RansomGuard` folder and its own log and settings in `%LOCALAPPDATA%\RansomGuard`.
 
 **Programs and the network.**
 
 | When | What it does |
 | --- | --- |
 | A program runs a dangerous command (deleting restore points, turning off Defender...) | Ends that program and pauses the programs that started it (up to three levels) |
-| Possible ransomware is detected | Pauses the programs writing the most data (up to five), disables every network adapter (if that fails: blocks all traffic in the firewall, releases the IP address and disconnects Wi-Fi), shows the full-screen warning |
+| Possible ransomware is detected | Pauses the programs writing the most data (up to five), asks Microsoft Defender to scan the paused programs and run a quick scan, disables every network adapter (if that fails: blocks all traffic in the firewall, releases the IP address and disconnects Wi-Fi), shows the full-screen warning |
+| A new program, script or archive appears in Downloads or on the Desktop | Asks Microsoft Defender to scan it once it is complete, and tells you if Defender finds a threat |
 | While the warning is open | Disables any network adapter that gets turned on again |
 | You restore the network | Turns the network adapters back on, puts the firewall settings back, and resumes paused programs that Defender finds clean |
 | You click "Force shut down now" on the warning | Shuts the computer down, after asking you to confirm |
 
-**Internet connections.** Only the exe connects to the internet, and only to GitHub. It asks `api.github.com` for the latest version every 6 hours and when the control panel opens. It downloads a new version from `github.com` only after you agree, and checks the file's SHA-256 before installing it. No information about you or your files is sent anywhere. The Python version never connects to the internet. Microsoft Defender scans run on your computer; whether Defender itself contacts Microsoft depends on your Defender settings.
+**Internet connections.** By default RansomGuard doesn't connect to the internet by itself. Only the exe ever connects, and only to GitHub: when you click **Update to the latest version** (or run it with `--update` or `--install`), or every 6 hours and when the control panel opens if you turn on **Check for updates automatically** (off by default, because every check shows GitHub your IP address). It downloads a new version from `github.com` only after you agree, and checks the file's SHA-256 before installing it. No information about you or your files is sent anywhere. The Python version never connects to the internet. Microsoft Defender scans run on your computer; whether Defender itself contacts Microsoft depends on your Defender settings.
 
 ## Update
 
-RansomGuard tells you when a new version is out: the background monitor checks GitHub two minutes after you sign in and then every 6 hours, and the control panel checks when it opens. Answer **Yes** and it updates by itself (each version is asked about once per sign-in).
+To be told when a new version is out, tick **Check for updates automatically** at the bottom left of the control panel. The background monitor then checks GitHub two minutes after you sign in and every 6 hours, and the control panel checks when it opens. Answer **Yes** and it updates by itself (each version is asked about once per sign-in). It is off by default, because each check shows GitHub your IP address (see [Privacy](PRIVACY.md)); versions before 1.7.3 always checked.
 
-To update by hand, open "RansomGuard" on the desktop and click **Update to the latest version** (it reads **Update to v…** and turns blue when the control panel has found a newer version). It checks GitHub for a newer release, downloads it, verifies it against the SHA-256 that GitHub publishes, installs it and reopens the control panel with the new version. Without an internet connection it simply reinstalls the current version. The current version number is shown in the top-left corner of the control panel.
+To update by hand, open "RansomGuard" on the desktop and click **Update to the latest version** (with automatic update checks on, it reads **Update to v…** and turns blue when the control panel has found a newer version). It checks GitHub for a newer release, downloads it, verifies it against the SHA-256 that GitHub publishes, installs it and reopens the control panel with the new version. Without an internet connection it simply reinstalls the current version. The current version number is shown in the top-left corner of the control panel.
 
 **You don't have to update.** Answer **No** when asked, and monitoring continues with the version you have. **Install and start monitoring** never contacts GitHub: it installs the version that is running and starts monitoring with it. You can update whenever you like.
 
@@ -133,8 +138,10 @@ To update by hand, open "RansomGuard" on the desktop and click **Update to the l
 | Restore network and restart monitoring | Restores the network after a false alarm |
 | Stop monitoring | Stops it for now; it starts again at next sign-in |
 | Preview warning | Shows what the warning looks like, without cutting the network |
-| Open log | Log file: `%LOCALAPPDATA%\RansomGuard\guard.log` |
-| Uninstall | Removes background monitoring, the health check, the desktop shortcut, the canary files and the `C:\Program Files\RansomGuard` folder |
+| Open log | Log file: `%LOCALAPPDATA%\RansomGuard\guard.log` (entries older than 30 days are removed) |
+| Check for updates automatically (bottom left) | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
+| Clear log | Empties the log, which lists the files and programs that were detected |
+| Uninstall | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder and the log and settings |
 | English / 中文(繁體) (top right) | Switches the interface language |
 
 ## Command-line options
@@ -169,7 +176,7 @@ Run the tests (Python's built-in `unittest`; `pytest` runs them too):
 python -m unittest discover -s tests -v
 ```
 
-The tests only use temporary folders and never touch your files, the network settings, the internet or the installed program. This is enforced for the whole suite: user folders, the app folder and the install folder point into a temporary sandbox, and a test that reaches PowerShell, `ipconfig` / `netsh` / shutdown, the internet or the full-screen warning without replacing it fails instead. Only processes the tests started themselves can be paused.
+The tests only use temporary folders and never touch your files, the network settings, the internet or the installed program. This is enforced for the whole suite: user folders, the app folder and the install folder point into a temporary sandbox, and a test that reaches the PowerShell commands for network adapters, the firewall or scheduled tasks, `ipconfig` / `netsh` / shutdown, the internet or the full-screen warning without replacing it fails instead. Only processes the tests started themselves can be paused. Some tests use read-only Windows features for real: watching new processes through WMI, Defender scans of temporary files, and reading scheduled tasks.
 
 The icon (`icon.ico` / `icon.png`) is generated by `make_icon.py` (needs `pip install pillow`). To change the icon, edit that file and run it again.
 
@@ -188,7 +195,7 @@ The built file is `dist\RansomGuard.exe`.
 Releases are built and published by GitHub Actions, never uploaded by hand:
 
 1. Change `VERSION` in `ransom_guard.py`, e.g. to `"1.7.2"`, and write the release notes in `release-notes/v1.7.2.md`.
-2. Run the tests, commit and push. The [CI workflow](.github/workflows/ci.yml) runs the checks, the tests and a build on every push and pull request.
+2. Run the tests, commit and push. The [CI workflow](.github/workflows/ci.yml) runs the checks, the tests and a build on every push to a branch and every pull request.
 3. Tag the commit and push the tag:
 
    ```
@@ -217,7 +224,7 @@ RansomGuard is an extra line of defense, not your only one. Keep using antivirus
 - Ransomware that deletes restore points through Windows programming interfaces, instead of running commands such as `vssadmin`, is not caught by the dangerous-command check.
 - Programs that write through memory-mapped files don't show up in the write counts, so they may not be found to be paused.
 - Ransomware that already has administrator rights can stop RansomGuard or delete its scheduled task. The health check tells you within a day.
-- After it triggers, monitoring stays off until you restore the network.
+- After it triggers and you close the warning, monitoring stays off until you restore the network or sign in to Windows again. If you sign in again before restoring the network, it reminds you that the network was cut and starts monitoring again.
 - It has been tested with automated tests and simulated ransomware (files encrypted and renamed by a test script), never with real ransomware.
 - Windows 10 and 11 only, and it needs administrator rights.
 
@@ -226,6 +233,7 @@ RansomGuard is an extra line of defense, not your only one. Keep using antivirus
 - **False alarms cut the network.** This happens if you touch a canary file, if a program renames 10 or more files to an unusual extension within 30 seconds, or if files named like ransom notes (e.g. `how to recover files.txt`) appear in three folders.
 - **Legitimate maintenance is stopped.** Backup software or an administrator running `wbadmin delete backup`, `vssadmin delete shadows` or `wevtutil cl` is treated as ransomware: the command is ended and the network is cut.
 - **Normal programs can be paused by a false alarm.** Editors, browsers and OneDrive write all the time and may be paused (and freeze) until you restore the network from the control panel. If you restore with `restore_network.bat` instead, they stay paused until the computer restarts.
+- **You won't hear about new versions unless you ask.** Automatic update checks are off by default for privacy, so improvements and fixes reach you only if you click **Update to the latest version** now and then, or turn on **Check for updates automatically**.
 - **Uninstalling deletes the whole `C:\Program Files\RansomGuard` folder**, including any files you put there yourself.
 - A file of your own named exactly like a canary file (e.g. `!!!_canary_do_not_delete.docx`) in Documents or Pictures is replaced by the canary file.
 

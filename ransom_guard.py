@@ -74,7 +74,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.7.2"  # bump this, add release-notes/v1.7.2.md and push the tag v1.7.2 to publish a release
+VERSION = "1.7.3"  # bump this, add release-notes/v1.7.3.md and push the tag v1.7.3 to publish a release
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -351,9 +351,13 @@ def fix_console_encoding():
                 pass
 
 
+LOG_KEEP_DAYS = 30  # the log names files and programs, which can be personal: older entries are removed
+
+
 def setup_logging():
     log.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    prune_log(app_dir() / "guard.log")
     fh = RotatingFileHandler(app_dir() / "guard.log", maxBytes=1_000_000,
                              backupCount=3, encoding="utf-8")
     fh.setFormatter(fmt)
@@ -362,6 +366,72 @@ def setup_logging():
         sh = logging.StreamHandler()
         sh.setFormatter(fmt)
         log.addHandler(sh)
+
+
+def _log_files(log_file: Path) -> list:
+    """guard.log and the older parts RotatingFileHandler made of it (guard.log.1, .2, .3)."""
+    return [log_file, *(log_file.with_name(f"{log_file.name}.{i}") for i in range(1, 4))]
+
+
+def prune_log(log_file: Path, days=LOG_KEEP_DAYS):
+    """Remove log entries older than `days`: whole older parts, and old lines at the start of guard.log.
+    Done before this program opens the log; if another RansomGuard has it open, it is left for next time."""
+    cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - days * 86400))
+    for part in _log_files(log_file)[1:]:
+        try:
+            if part.stat().st_mtime < time.time() - days * 86400:
+                part.unlink()
+        except OSError:
+            pass
+    try:
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    except OSError:
+        return
+    # an entry starts with its time ("2026-11-04 10:00:00,123 [INFO] ..."); the lines after it (a traceback)
+    # belong to it. Entries are in time order, so keep everything from the first recent one on.
+    start = next((i for i, line in enumerate(lines) if re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", line)
+                  and line[:19] >= cutoff), len(lines))
+    if start == 0:
+        return
+    try:
+        tmp = log_file.with_name(log_file.name + ".tmp")
+        tmp.write_text("".join(lines[start:]), encoding="utf-8")
+        os.replace(tmp, log_file)
+    except OSError:
+        pass
+
+
+def prune_own_log():
+    """prune_log() from a program that has the log open itself (the background monitor, daily): let go of
+    the file first; the next log line reopens it."""
+    for h in log.handlers:
+        if isinstance(h, logging.FileHandler):
+            h.acquire()
+            try:
+                if h.stream:
+                    h.stream.close()
+                    h.stream = None  # not h.close(): the handler stays usable and reopens on the next line
+            finally:
+                h.release()
+    prune_log(app_dir() / "guard.log")
+
+
+def clear_log() -> bool:
+    """Empty the log and delete its older parts (the control panel's "Clear log"). The background monitor
+    keeps it open but appends, so it simply goes on writing at the new end."""
+    ok = True
+    for i, part in enumerate(_log_files(app_dir() / "guard.log")):
+        try:
+            if i == 0:
+                with open(part, "r+b") as f:
+                    f.truncate(0)
+            else:
+                part.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            ok = False
+    return ok
 
 
 def _load_json(name: str) -> dict:
@@ -411,13 +481,23 @@ def init_lang(arg=None):
     LANG = _LANG_ARG or saved_lang() or system_lang()
 
 
+def set_setting(key: str, value):
+    st = load_settings()
+    st[key] = value
+    (app_dir() / "settings.json").write_text(
+        json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def set_lang(lang: str):
     global LANG
     LANG = lang
-    st = load_settings()
-    st["lang"] = lang
-    (app_dir() / "settings.json").write_text(
-        json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    set_setting("lang", lang)
+
+
+def auto_update_check() -> bool:
+    """Whether RansomGuard may look for new versions on GitHub by itself. Off unless the user turned it on:
+    every check shows GitHub this computer's IP address. Updating by clicking the button always works."""
+    return load_settings().get("auto_update_check") is True
 
 
 def is_admin() -> bool:
@@ -1559,6 +1639,7 @@ class DownloadScanner:
 
     @staticmethod
     def _alert(path):
+        init_lang()  # the language most recently chosen in the control panel (the monitor may predate it)
         alert(tr("RansomGuard：Defender 發現威脅", "RansomGuard: Defender found a threat"),
               tr(f"新檔案含有威脅：\n{path}\n\nMicrosoft Defender 正在處理（通常會隔離或刪除）。請不要開啟這個檔案。",
                  f"A new file contains a threat:\n{path}\n\nMicrosoft Defender is handling it (it usually "
@@ -2136,8 +2217,20 @@ def uninstall(report=print) -> bool:
                 delete_at_restart(p)
             report(tr(f"{INSTALL_DIR} 會在下次開機時刪除", f"{INSTALL_DIR} will be deleted at the next restart"))
     log.info(tr("已解除安裝背景監控", "Background monitoring uninstalled"))
+    remove_app_data(report)
     report(tr("解除安裝完成。", "Uninstall complete."))
     return True
+
+
+def remove_app_data(report):
+    """Delete the log, state and settings (%LOCALAPPDATA%\\RansomGuard): nothing of the user is left behind."""
+    for h in [h for h in log.handlers if isinstance(h, logging.FileHandler)]:
+        log.removeHandler(h)  # this program's own handle on guard.log would keep it from being deleted
+        h.close()
+    folder = app_dir()
+    shutil.rmtree(folder, ignore_errors=True)
+    report(tr(f"已刪除紀錄檔與設定（{folder}）", f"Deleted the log and settings ({folder})") if not folder.exists() else
+           tr(f"  有些檔案仍在使用中，沒有刪除：{folder}", f"  Some files are still in use and were not deleted: {folder}"))
 
 
 UPDATE_CHECK_DELAY = 120           # first update check this many seconds after the monitor starts
@@ -2155,12 +2248,13 @@ def ask_update(new: str) -> bool:
 
 def update_watcher(stop):
     """Background monitor: whenever GitHub has a newer release, ask the user to update
-    (each version once per sign-in) and, on Yes, open the control panel to do it."""
+    (each version once per sign-in) and, on Yes, open the control panel to do it.
+    Only while automatic update checks are turned on (read again each time, so switching applies at once)."""
     asked = set()
     if stop.wait(UPDATE_CHECK_DELAY):
         return
     while True:
-        new = check_for_update()
+        new = check_for_update() if auto_update_check() else None
         if new and new not in asked:
             asked.add(new)
             init_lang()
@@ -2441,6 +2535,26 @@ def gui(auto_update=False):
         else:
             messagebox.showinfo(tr("紀錄檔", "Log"), tr("還沒有紀錄檔。", "There is no log file yet."))
 
+    def on_auto_update():
+        if w["auto"].get() and not messagebox.askyesno(
+                tr("自動檢查新版本", "Check for updates automatically"),
+                tr("開啟後，RansomGuard 每 6 小時，以及開啟控制台時，會連到 GitHub 檢查有沒有新版本。\n"
+                   "GitHub 會因此看到這台電腦的 IP 位址（不會傳送其他資料）。\n\n要開啟嗎？",
+                   "RansomGuard will then contact GitHub every 6 hours, and when the control panel opens, to look "
+                   "for a new version.\nGitHub sees this computer's IP address when it does (nothing else is "
+                   "sent).\n\nTurn it on?")):
+            w["auto"].set(False)
+        set_setting("auto_update_check", bool(w["auto"].get()))
+
+    def on_clear_log():
+        if messagebox.askyesno(tr("清除紀錄檔", "Clear log"),
+                               tr("紀錄檔記錄了偵測到的檔案與程式。確定要清除嗎？",
+                                  "The log lists the files and programs that were detected. Clear it?")):
+            ok = clear_log()
+            write(tr("紀錄檔已清除。", "The log was cleared.") if ok else
+                  tr("[失敗] 有部分紀錄檔正在使用中，沒有清除。", "[Failed] Part of the log is in use and was not cleared."),
+                  None if ok else "err")
+
     def on_lang():
         set_lang("en" if LANG == "zh" else "zh")
         build()
@@ -2514,7 +2628,7 @@ def gui(auto_update=False):
         set_window_icons(root, icon)
         if auto_update:  # opened from the "new version available" prompt
             root.after(300, lambda: run_bg(install))
-        else:
+        elif auto_update_check():  # only if the user allowed it: GitHub sees this computer's IP address
             threading.Thread(target=lambda: q.put(("update", check_for_update())), daemon=True).start()
 
     def build():
@@ -2620,9 +2734,16 @@ def gui(auto_update=False):
 
         foot = tk.Frame(body, bg=C["bg"])
         foot.pack(fill="x", pady=(px(10), 0))
+        w["auto"] = tk.BooleanVar(value=auto_update_check())
+        tk.Checkbutton(foot, text=tr("自動檢查新版本", "Check for updates automatically"), variable=w["auto"],
+                       command=on_auto_update, font=(FONT, 10), fg=C["text"], bg=C["bg"], activebackground=C["bg"],
+                       selectcolor=C["card"], highlightthickness=0, bd=0, cursor="hand2").pack(side="left")
         rim, b = make_button(foot, tr("解除安裝", "Uninstall"), on_uninstall, "danger")
         b.config(font=(FONT, 10), padx=px(10), pady=px(4), width=10)  # same width in both languages
         rim.pack(side="right")
+        rim, b = make_button(foot, tr("清除紀錄檔", "Clear log"), on_clear_log, "danger")
+        b.config(font=(FONT, 10), padx=px(10), pady=px(4), width=10, fg=C["muted"])
+        rim.pack(side="right", padx=(0, px(4)))
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     if _LANG_ARG or saved_lang():
@@ -2747,12 +2868,15 @@ def run(args):
              "; ".join(str(d) for d in watch_dirs))
     log.info(tr("誘餌檔：%s", "Canary files: %s"), "; ".join(str(p) for p in canaries))
     try:
-        last = time.time()
+        last = pruned = time.time()
         while not stop.wait(1):
             if time.time() - last < CHECK_INTERVAL:
                 continue
             last = time.time()
             periodic_check(handler, canaries)
+            if last - pruned > 86400:  # the monitor can run for weeks: keep the log to LOG_KEEP_DAYS anyway
+                pruned = last
+                prune_own_log()
             # restart a monitor component that stopped unexpectedly (e.g. a watched folder vanished), up to 10 times
             if restarts < 10 and not observer.is_alive():
                 restarts += 1

@@ -885,6 +885,7 @@ class UpdateNotificationTests(UpdateTests):
         stop = threading.Event()
         checks = iter(versions)
         with mock.patch.object(rg, "UPDATE_CHECK_DELAY", 0), mock.patch.object(rg, "UPDATE_CHECK_INTERVAL", 0.05), \
+                mock.patch.object(rg, "auto_update_check", lambda: True), \
                 mock.patch.object(rg, "check_for_update", lambda: next(checks, versions[-1])), \
                 mock.patch.object(rg, "ask_update", lambda v: asked.append(v) or answer), \
                 mock.patch.object(rg.subprocess, "Popen", lambda args, **kw: launched.append(args)):
@@ -905,6 +906,95 @@ class UpdateNotificationTests(UpdateTests):
         asked, launched = self.run_watcher(["1.5.0"], answer=True, seconds=0.3)
         self.assertEqual(asked, ["1.5.0"])
         self.assertEqual(launched, [[str(rg.INSTALL_EXE), "--update"]])
+
+    def test_automatic_update_checks_are_off_unless_turned_on(self):
+        # every check shows GitHub the computer's IP address, so none happens by default
+        checks, stop = [], threading.Event()
+        with mock.patch.object(rg, "app_dir", lambda: self.dir), mock.patch.object(rg, "UPDATE_CHECK_DELAY", 0), \
+                mock.patch.object(rg, "UPDATE_CHECK_INTERVAL", 0.05), \
+                mock.patch.object(rg, "check_for_update", lambda: checks.append(1)):
+            self.assertFalse(rg.auto_update_check())
+            t = threading.Thread(target=rg.update_watcher, args=(stop,))
+            t.start()
+            time.sleep(0.3)
+            self.assertEqual(checks, [], "no automatic check while it is off")
+            rg.set_setting("auto_update_check", True)  # turned on in the control panel: applies at once
+            time.sleep(0.3)
+            stop.set()
+            t.join(5)
+            self.assertTrue(checks)
+            self.assertEqual(rg.load_settings()["auto_update_check"], True)
+
+    def test_uninstall_deletes_the_log_and_settings(self):
+        app = self.dir / "LocalAppData" / "RansomGuard"
+        app.mkdir(parents=True)
+        for name in ("guard.log", "guard.log.1", "state.json", "settings.json"):
+            (app / name).write_text("x", encoding="utf-8")
+        msgs = []
+        with mock.patch.object(rg, "app_dir", lambda: app):
+            rg.remove_app_data(msgs.append)
+        self.assertFalse(app.exists())
+        self.assertIn("Deleted the log and settings", msgs[0])
+
+
+# ---------------------------------------------------------------- the log's privacy: kept 30 days, can be cleared
+class LogPrivacyTests(TempDirTest):
+    def stamp(self, days_ago):
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - days_ago * 86400)) + ",000"
+
+    def test_entries_older_than_30_days_are_removed(self):
+        log_file = self.dir / "guard.log"
+        log_file.write_text(
+            f"{self.stamp(40)} [INFO] old: C:\\Users\\someone\\secret.docx\n"
+            f"{self.stamp(35)} [ERROR] old failure\nTraceback (most recent call last):\n  old detail\n"
+            f"{self.stamp(2)} [INFO] recent entry\nTraceback (most recent call last):\n  recent detail\n"
+            f"{self.stamp(0)} [INFO] today\n", encoding="utf-8")
+        old_part = self.dir / "guard.log.2"
+        old_part.write_text("old part", encoding="utf-8")
+        os.utime(old_part, (time.time() - 40 * 86400,) * 2)
+        recent_part = self.dir / "guard.log.1"
+        recent_part.write_text("recent part", encoding="utf-8")
+        rg.prune_log(log_file)
+        text = log_file.read_text(encoding="utf-8")
+        self.assertNotIn("old", text)
+        self.assertTrue(text.startswith(self.stamp(2)[:10]))
+        self.assertIn("recent detail", text)
+        self.assertIn("today", text)
+        self.assertFalse(old_part.exists())
+        self.assertTrue(recent_part.exists())
+        rg.prune_log(self.dir / "missing.log")  # no log yet: nothing to do
+
+    def test_the_running_monitor_prunes_its_own_open_log(self):
+        # the monitor can run for weeks, so it prunes daily although it has the log open itself
+        log_file = self.dir / "guard.log"
+        log_file.write_text(f"{self.stamp(40)} [INFO] old entry\n", encoding="utf-8")
+        handler = logging.FileHandler(log_file, encoding="utf-8")
+        self.addCleanup(handler.close)
+        rg.log.addHandler(handler)
+        self.addCleanup(rg.log.removeHandler, handler)
+        handler.emit(logging.makeLogRecord({"msg": f"{self.stamp(0)} [INFO] recent entry"}))
+        handler.flush()
+        with mock.patch.object(rg, "app_dir", lambda: self.dir):
+            rg.prune_own_log()
+        self.assertNotIn("old entry", log_file.read_text(encoding="utf-8"))
+        handler.emit(logging.makeLogRecord({"msg": "after"}))  # the handler reopens the file by itself
+        handler.flush()
+        self.assertTrue(log_file.read_text(encoding="utf-8").rstrip().endswith("after"))
+
+    def test_clear_log_empties_it_while_another_handle_keeps_writing(self):
+        log_file = self.dir / "guard.log"
+        (self.dir / "guard.log.1").write_text("older part", encoding="utf-8")
+        handler = logging.FileHandler(log_file, encoding="utf-8")  # like the background monitor's open log
+        self.addCleanup(handler.close)
+        handler.emit(logging.makeLogRecord({"msg": "C:\\Users\\someone\\secret.docx"}))
+        handler.flush()
+        with mock.patch.object(rg, "app_dir", lambda: self.dir):
+            self.assertTrue(rg.clear_log())
+        self.assertEqual(log_file.read_text(encoding="utf-8"), "")
+        self.assertFalse((self.dir / "guard.log.1").exists())
+        handler.emit(logging.makeLogRecord({"msg": "after"}))
+        handler.flush()
+        self.assertEqual(log_file.read_text(encoding="utf-8").strip(), "after")
 
 
 # ---------------------------------------------------------------- process monitor (real WMI, harmless marker)
