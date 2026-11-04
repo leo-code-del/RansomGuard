@@ -1572,6 +1572,34 @@ class MonitorLoopTests(TempDirTest):
         self.wait_for(lambda: self.triggered)
         self.assertIn("Canary file", self.triggered[0][0])
 
+    def test_another_drive_in_place_of_a_watched_one_is_no_alarm(self):
+        # a watched USB drive is unplugged and another one (without canary files) gets the same drive letter
+        usb = self.dir / "usb"
+        usb.mkdir()
+        obs = self.start_with(self.watch, usb)
+        gone = self.watcher(obs, usb)
+        self.patch("REWATCH_INTERVAL", 3600)  # the new drive is noticed by the periodic check first
+        self.patch("CHECK_INTERVAL", 3600)  # no check halfway through the swap (a real drive goes as a whole)
+        time.sleep(1.5)
+        gone.stop()  # unplugged: the watcher stops
+        gone.join(5)
+        for name in rg.CANARY_NAMES:  # the other drive has none of the canary files
+            canary = usb / name
+            rg._set_hidden(canary, False)
+            os.replace(canary, self.dir / name)
+        self.patch("CHECK_INTERVAL", 0)
+        time.sleep(2)  # several periodic checks
+        self.assertEqual(self.triggered, [], "a missing canary of a folder that went away triggered")
+        self.patch("REWATCH_INTERVAL", 0)
+        self.wait_for(lambda: self.watcher(obs, usb) not in (None, gone))
+        canary = usb / rg.CANARY_NAMES[0]
+        self.assertEqual(canary.read_bytes(), rg.canary_bytes(canary), "the new drive got no canary files")
+        time.sleep(1)
+        self.assertEqual(self.triggered, [])
+        overwrite(canary, b"encrypted")
+        self.wait_for(lambda: self.triggered)
+        self.assertIn("Canary file", self.triggered[0][0])
+
     def test_a_folder_that_appears_later_gets_canaries_and_is_watched(self):
         usb = self.dir / "usb"  # not plugged in when the monitor starts
         obs = self.start_with(self.watch, usb)

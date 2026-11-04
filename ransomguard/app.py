@@ -103,14 +103,21 @@ def run(args, stop=None):
         live = {winapi.norm(e.watch.path) for e in observer.emitters if e.is_alive()}
         return [d for d in wanted if winapi.norm(d) not in live and d.is_dir()]  # only those are looked up
 
+    def not_watched_now():
+        """Folders whose watcher stopped (a USB drive was unplugged, say): their canary files are left out of the
+        periodic check until they are watched again. In their place there may now be another drive, without
+        canary files, and that is no attack."""
+        return {winapi.norm(e.watch.path) for e in observer.emitters if not e.is_alive()}
+
     def watch_again(dirs):
-        known = {winapi.norm(d) for d in watch_dirs}
-        new = [d for d in dirs if winapi.norm(d) not in known]
-        if new:  # canary files first, before the folder is watched, so planting them is no file event
-            added = canary.plant_canaries(new, upgrade=not args.dry_run)
-            canaries.extend(added)
-            handler.canaries.update(winapi.norm(p) for p in added)
-            watch_dirs.extend(new)
+        # canary files first, before the folder is watched, so planting them is no file event: a folder that
+        # comes back keeps intact ones (the same drive) and gets new ones (another drive, a new folder)
+        known = {winapi.norm(p) for p in canaries}
+        added = [p for p in canary.plant_canaries(dirs, upgrade=not args.dry_run) if winapi.norm(p) not in known]
+        canaries.extend(added)
+        handler.canaries.update(winapi.norm(p) for p in added)
+        watching = {winapi.norm(d) for d in watch_dirs}
+        watch_dirs.extend(d for d in dirs if winapi.norm(d) not in watching)
         again = {winapi.norm(d) for d in dirs}
         for e in list(observer.emitters):
             if winapi.norm(e.watch.path) in again:
@@ -137,7 +144,9 @@ def run(args, stop=None):
             if time.time() - last < config.CHECK_INTERVAL:
                 continue
             last = time.time()
-            detection.periodic_check(handler, canaries)
+            stopped = not_watched_now()
+            detection.periodic_check(handler, [p for p in canaries if winapi.norm(p.parent) not in stopped]
+                                     if stopped else canaries)
             if last - pruned > 86400:  # the monitor can run for weeks: keep the log to LOG_KEEP_DAYS anyway
                 pruned = last
                 storage.prune_own_log()
