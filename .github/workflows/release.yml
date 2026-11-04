@@ -76,7 +76,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $title = "RansomGuard $($env:TAG.TrimStart('v'))"
-          gh release create $env:TAG dist/RansomGuard.exe --draft --verify-tag --title $title --notes-file "release-notes/$env:TAG.md"
+          # the notes from release-notes/<tag>.md plus a link to the code signing policy (SignPath requires it)
+          python .github/scripts/release_notes.py $env:TAG "$env:RUNNER_TEMP/notes.md"
+          if ($LASTEXITCODE) { throw "writing the release notes failed" }
+          gh release create $env:TAG dist/RansomGuard.exe --draft --verify-tag --title $title --notes-file "$env:RUNNER_TEMP/notes.md"
           if ($LASTEXITCODE) { throw "creating the draft release failed" }
           gh release edit $env:TAG --draft=false --latest
           if ($LASTEXITCODE) { throw "publishing the release failed" }
