@@ -8,7 +8,7 @@ This page describes what personal data RansomGuard handles. It is written with t
 
 - **The developer collects nothing.** RansomGuard has no telemetry, analytics, crash reports, accounts or advertising, and it never sends your files, file names, logs or settings anywhere.
 - Everything RansomGuard records stays on your computer, is kept for at most 30 days (the log), and can be deleted by you at any time.
-- By default RansomGuard **doesn't connect to the internet by itself**. It contacts GitHub only when you click **Update to the latest version**, or every 6 hours if you turn on **Check for updates automatically**.
+- By default RansomGuard **doesn't connect to the internet by itself**. It contacts GitHub only when you click **Check for updates**, or every 6 hours if you turn on **Check for updates automatically**.
 
 ## What stays on your computer
 
@@ -27,7 +27,7 @@ RansomGuard reads the first 16 KB of files that change in your watched folders t
 
 **GitHub** (`api.github.com`, `github.com`) is the only place RansomGuard connects to, and only:
 
-- when you click **Update to the latest version** (or run `RansomGuard.exe --update` / `--install`);
+- when you click **Check for updates**, and to download a new version you agreed to install (or when you run `RansomGuard.exe --update` / `--install`);
 - every 6 hours and when the control panel opens, **only if you turned on Check for updates automatically** (off by default; the control panel explains what it means before turning it on);
 - when the health check finds that protection is gone and you choose to open the download page in your browser.
 

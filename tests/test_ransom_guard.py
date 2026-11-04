@@ -880,6 +880,22 @@ class UpdateNotificationTests(UpdateTests):
         with self.serve(tag="v1.5.0"):  # running from source: never offers the exe
             self.assertIsNone(rg.check_for_update())
 
+    def test_check_for_updates_button(self):
+        # the button reports what it found and returns the newer version; it never installs by itself
+        def check(**serve):
+            msgs = []
+            with mock.patch.object(rg, "FROZEN", True), self.serve(**serve):
+                return rg.check_updates(msgs.append), msgs[-1]
+        self.assertEqual(check(tag="v1.5.0"), ("1.5.0", "Version 1.5.0 is available (you have v1.2.0)."))
+        self.assertEqual(check(tag="v1.2.0"), (None, "You have the latest version (v1.2.0)."))
+        new, msg = check(api_error=OSError("offline"))
+        self.assertIsNone(new)
+        self.assertTrue(msg.startswith("[Failed] Could not reach GitHub"))
+        self.assertEqual(rg.INSTALL_EXE.read_bytes(), b"old version", "checking must not install anything")
+        msgs = []  # running from source: GitHub isn't even asked (urlopen is forbidden in the tests)
+        self.assertIsNone(rg.check_updates(msgs.append))
+        self.assertIn("git pull", msgs[-1])
+
     def run_watcher(self, versions, answer, seconds=1.0):
         asked, launched = [], []
         stop = threading.Event()

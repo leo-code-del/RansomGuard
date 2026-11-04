@@ -46,8 +46,8 @@ packed inside; without it the window, taskbar and shortcut show PyInstaller's de
 
 Download and update: https://github.com/leo-code-del/RansomGuard/releases
   Download the new RansomGuard.exe -> run it -> click "Install and start monitoring"
-  (or click "Update to the latest version" in the control panel; "Install and start monitoring" alone
-  keeps the version that is running)
+  (or click "Check for updates" in the control panel; "Install and start monitoring" alone keeps the
+  version that is running)
 """
 
 import argparse
@@ -74,7 +74,7 @@ from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-VERSION = "1.7.3"  # bump this, add release-notes/v1.7.3.md and push the tag v1.7.3 to publish a release
+VERSION = "1.7.4"  # bump this, add release-notes/v1.7.4.md and push the tag v1.7.4 to publish a release
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -1971,6 +1971,25 @@ def check_for_update():
     return latest if asset is not None and version_tuple(latest) > version_tuple(VERSION) else None
 
 
+def check_updates(report):
+    """The control panel's "Check for updates" button: ask GitHub (the user clicked, so contacting it is
+    expected) and say what it found. Returns the newer version, or None; updating is offered separately."""
+    report(tr("檢查新版本...", "Checking for a new version..."))
+    if not FROZEN:
+        report(tr("從原始碼執行時，請用 git pull 更新程式碼。", "Running from source: update the code with git pull."))
+        return None
+    try:
+        latest, asset = latest_release()
+    except Exception as ex:
+        report(tr(f"[失敗] 無法連到 GitHub：{ex}", f"[Failed] Could not reach GitHub: {ex}"))
+        return None
+    if asset is not None and version_tuple(latest) > version_tuple(VERSION):
+        report(tr(f"有新版本 v{latest}（目前是 v{VERSION}）。", f"Version {latest} is available (you have v{VERSION})."))
+        return latest
+    report(tr(f"已經是最新版本（v{VERSION}）。", f"You have the latest version (v{VERSION})."))
+    return None
+
+
 def fetch_update(report):
     """If GitHub has a newer release, download it, check its SHA-256 against the one GitHub publishes
     and install it as INSTALL_EXE. Returns the new version, or None (already latest / check failed)."""
@@ -2376,47 +2395,88 @@ def gui(auto_update=False):
     buttons = []
     w = {}  # widgets on screen now; the whole window is rebuilt when the language changes
 
-    def make_button(parent, text, cmd, name):
+    def make_button(parent, text, cmd, name, tip_text=None):
         rim = tk.Frame(parent)  # 1px border (a tk button's own border can only be black on Windows)
         b = tk.Button(rim, text=text, command=cmd, font=(w["font"], 11), relief="flat", bd=0,
                       highlightthickness=0, cursor="hand2", padx=px(12), pady=px(7))
         b.pack(fill="both", padx=1, pady=1)
         buttons.append(b)
+
+        # bound once and reading the current style, so restyling (show_status) doesn't stack handlers
+        def enter(_):
+            if str(b["state"]) == "normal":
+                hover = STYLES[b.rg_style][1]
+                b.config(bg=hover)
+                rim.config(bg=C["border"] if b.rg_style == "secondary" else hover)
+        b.bind("<Enter>", enter, add="+")
+        b.bind("<Leave>", lambda _: style(b, b.rg_style), add="+")
         style(b, name)
+        if tip_text:
+            tip(b, tip_text)
         return rim, b
 
     def style(b, name):
+        b.rg_style = name
         bg, hover, fg, dim = STYLES[name]
-        rim = b.master
-        edge = C["border"] if name == "secondary" else bg
-        rim.config(bg=edge)
+        b.master.config(bg=C["border"] if name == "secondary" else bg)
         b.config(bg=bg, fg=fg, activebackground=hover, activeforeground=fg, disabledforeground=dim)
 
-        def enter(_):
-            if str(b["state"]) == "normal":
-                b.config(bg=hover)
-                rim.config(bg=C["border"] if name == "secondary" else hover)
+    def tip(widget, text):
+        """A short description shown while the mouse rests on a widget."""
+        state = {}
 
-        def leave(_):
-            b.config(bg=bg)
-            rim.config(bg=edge)
-        b.bind("<Enter>", enter)
-        b.bind("<Leave>", leave)
+        def show():
+            state.pop("job", None)
+            win = state["win"] = tk.Toplevel(root)
+            win.wm_overrideredirect(True)
+            win.wm_attributes("-topmost", True)
+            tk.Label(win, text=text, font=(w["font"], 9), bg="#1f2937", fg="#f9fafb", justify="left",
+                     wraplength=px(380), padx=px(9), pady=px(6)).pack()
+            win.update_idletasks()
+            x = min(widget.winfo_rootx() + px(10), widget.winfo_screenwidth() - win.winfo_width() - px(8))
+            win.wm_geometry(f"+{x}+{widget.winfo_rooty() + widget.winfo_height() + px(4)}")
+
+        def hide(_=None):
+            if "job" in state:
+                root.after_cancel(state.pop("job"))
+            if "win" in state:
+                state.pop("win").destroy()
+
+        def enter(_):
+            if "job" not in state and "win" not in state:
+                state["job"] = root.after(600, show)
+        widget.bind("<Enter>", enter, add="+")
+        widget.bind("<Leave>", hide, add="+")
+        widget.bind("<ButtonPress>", hide, add="+")
 
     def show_status(info):
         for (dot, val, detail), (text, level, note) in zip((w["mon"], w["net"]), info):
             dot.config(fg=C[level])
             val.config(text=text, fg=C["bad"] if level == "bad" else C["text"])
             detail.config(text=note or " ")
-        cut = info[1][1] == "bad"  # highlight "Restore network" while the network is cut
-        style(w["install"], "secondary" if cut else "primary")
+        # color only what needs the user now: restoring a cut network, starting monitoring that isn't running,
+        # a newer version; when everything is fine no button stands out
+        cut, running = info[1][1] == "bad", info[0][1] == "ok"
+        style(w["install"], "primary" if not cut and not running else "secondary")
         style(w["update"], "primary" if w.get("new") and not cut else "secondary")
         style(w["restore"], "success" if cut else "secondary")
 
     def update_label():
         new = w.get("new")
-        return (tr(f"更新到 v{new}", f"Update to v{new}") if new else
-                tr("更新到最新版本", "Update to the latest version"))
+        return tr(f"更新到 v{new}", f"Update to v{new}") if new else tr("檢查版本更新", "Check for updates")
+
+    def offer_update(new):
+        """A newer version is known (found by the automatic check or the button): name it, then ask."""
+        w["new"] = new
+        w["update"].config(text=update_label())
+        style(w["update"], "primary")
+        if messagebox.askyesno("RansomGuard", tr(
+                f"有新版本 v{new}（目前是 v{VERSION}）。\n\n要現在更新嗎？\n"
+                "選「否」會繼續用目前的版本監控，之後隨時可以再按「檢查版本更新」。",
+                f"Version {new} is available (you have v{VERSION}).\n\nUpdate now?\n"
+                "With \"No\" monitoring continues with this version; you can click \"Check for updates\" "
+                "again any time.")):
+            run_bg(install)
 
     def write(msg, tag=None):
         out = w["out"]
@@ -2457,19 +2517,12 @@ def gui(auto_update=False):
                     write(msg, "err" if msg.startswith(("[失敗]", "[Failed]")) else None)
                 elif kind == "status":
                     show_status(msg)
-                elif kind == "update":  # a newer version was found when the window opened
-                    if msg:  # the update button names it and turns blue, also if the user says "no" now
+                elif kind == "update":  # the automatic check found a newer version when the window opened
+                    if msg and not w.get("working"):
+                        offer_update(msg)
+                    elif msg:  # busy now: just name it on the button
                         w["new"] = msg
                         w["update"].config(text=update_label())
-                        if not w.get("working"):
-                            style(w["update"], "primary")
-                    if msg and not w.get("working") and messagebox.askyesno(
-                            "RansomGuard", tr(f"有新版本 v{msg}（目前是 v{VERSION}）。\n\n要現在更新嗎？\n"
-                                              "選「否」會繼續用目前的版本監控，之後隨時可以按「更新到最新版本」。",
-                                              f"Version {msg} is available (you have v{VERSION}).\n\nUpdate now?\n"
-                                              "With \"No\" monitoring continues with this version; you can click "
-                                              "\"Update to the latest version\" any time.")):
-                        run_bg(install)
                 else:
                     for b in buttons:
                         b.config(state="normal")
@@ -2488,6 +2541,9 @@ def gui(auto_update=False):
                             root.destroy()
                             return
                     refresh()
+                    offer = w.pop("offer", None)  # found by the "Check for updates" button
+                    if offer:
+                        offer_update(offer)
         except queue.Empty:
             pass
         w["pump"] = root.after(100, pump)
@@ -2681,8 +2737,10 @@ def gui(auto_update=False):
             val.pack(side="left", padx=(px(4), 0))
             # always two lines tall, so a note that wraps in one language doesn't make the card taller
             detail = tk.Label(f, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"], height=2,
-                              anchor="nw", justify="left", wraplength=px(250))
+                              anchor="nw", justify="left", wraplength=px(200))
             detail.pack(fill="x", padx=px(16), pady=(0, px(8)))
+            # wrap at the card's real width: a fixed width cut long notes off when the window got narrower
+            detail.bind("<Configure>", lambda e: detail.config(wraplength=max(e.width - px(2), px(80))))
             return dot, val, detail
 
         w["mon"] = card(0, tr("背景監控", "Background monitoring"))
@@ -2694,56 +2752,78 @@ def gui(auto_update=False):
             tk.Label(row, text=title, font=(FONT, 10, "bold"), fg=C["muted"], bg=C["bg"]).pack(side="left")
             return row
 
-        # action buttons
-        section(tr("操作", "Actions"))
-        acts = tk.Frame(body, bg=C["bg"])
-        acts.pack(fill="x")
-        acts.columnconfigure((0, 1), weight=1, uniform="btn")
-        # install keeps the version that is running (for users who want to stay on it); update gets the newest
-        rim, w["install"] = make_button(acts, tr("安裝並開始監控", "Install and start monitoring"),
-                                        lambda: run_bg(lambda rep: install(rep, update=False)), "primary")
-        w["install"].config(font=(FONT, 12, "bold"), pady=px(9))
-        rim.grid(row=0, column=0, sticky="ew", pady=(0, px(8)), padx=(0, px(4)))
-        rim, w["update"] = make_button(acts, update_label(), lambda: run_bg(install), "secondary")
-        w["update"].config(font=(FONT, 12, "bold"), pady=px(9))
-        rim.grid(row=0, column=1, sticky="ew", pady=(0, px(8)), padx=(px(4), 0))
-        for i, (text, cmd) in enumerate([
-                (tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore),
-                (tr("停止監控", "Stop monitoring"), on_stop),
-                (tr("預覽警告畫面", "Preview warning"), on_preview),
-                (tr("開啟紀錄檔", "Open log"), on_log)]):
-            rim, b = make_button(acts, text, cmd, "secondary")
-            rim.grid(row=1 + i // 2, column=i % 2, sticky="ew", pady=(0, px(8)),
-                     padx=(0, px(4)) if i % 2 == 0 else (px(4), 0))
-            if i == 0:
-                w["restore"] = b
+        def grid(title, rows):
+            """A titled group of buttons, two per row; a row with one button spans both columns.
+            rows: [[(key, text, command, tooltip), ...], ...]; returns {key: button}."""
+            section(title)
+            g = tk.Frame(body, bg=C["bg"])
+            g.pack(fill="x")
+            g.columnconfigure((0, 1), weight=1, uniform="btn")
+            made = {}
+            for r, row in enumerate(rows):
+                for c, (key, text, cmd, hint) in enumerate(row):
+                    rim, made[key] = make_button(g, text, cmd, "secondary", hint)
+                    rim.grid(row=r, column=c, columnspan=2 if len(row) == 1 else 1, sticky="ew",
+                             pady=(0, px(8)), padx=(0, 0) if len(row) == 1 else ((0, px(4)) if c == 0 else (px(4), 0)))
+            return made
 
-        # activity log
-        w["busy"] = tk.Label(section(tr("執行紀錄", "Activity")), text="", font=(FONT, 10),
+        # protection: what keeps (or stops) the computer protected
+        w.update(grid(tr("防護", "Protection"), [
+            [("install", tr("安裝並開始監控", "Install and start monitoring"),
+              lambda: run_bg(lambda rep: install(rep, update=False)),
+              tr("用目前這個版本安裝並開始背景監控，不會連網。",
+                 "Installs background monitoring with this version and starts it. Doesn't connect to the internet.")),
+             ("stop", tr("停止監控", "Stop monitoring"), on_stop,
+              tr("暫時停止背景監控，下次登入 Windows 時會自動再啟動。",
+                 "Stops background monitoring for now; it starts again when you next sign in to Windows."))],
+            [("restore", tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore,
+              tr("誤判時使用：重新啟用網路、恢復 Defender 確認沒問題的被暫停程式，並重新開始監控。",
+                 "After a false alarm: turns the network back on, resumes paused programs Defender finds clean "
+                 "and restarts monitoring."))]]))
+        # tools: everything else, each pair belongs together
+        w.update(grid(tr("工具", "Tools"), [
+            [("update", update_label(), lambda: run_bg(lambda rep: w.__setitem__("offer", check_updates(rep))),
+              tr("連到 GitHub 檢查有沒有新版本，有的話會詢問是否更新。", "Asks GitHub whether there is a newer version and "
+                 "offers to update if there is.")),
+             ("preview", tr("預覽警告畫面", "Preview warning"), on_preview,
+              tr("顯示觸發時的全螢幕警告，不會切斷網路。", "Shows the full-screen warning, without cutting the network."))],
+            [("log", tr("開啟紀錄檔", "Open log"), on_log,
+              tr("紀錄檔記錄偵測到的檔案與程式，保留 30 天。", "The log lists detected files and programs, kept for 30 days.")),
+             ("clear", tr("清除紀錄檔", "Clear log"), on_clear_log,
+              tr("清空紀錄檔。", "Empties the log."))]]))
+
+        # progress of the action that runs (not the log file)
+        w["busy"] = tk.Label(section(tr("執行進度", "Progress")), text="", font=(FONT, 10),
                              fg=C["ok"], bg=C["bg"])
         w["busy"].pack(side="right")
         w["out"] = out = scrolledtext.ScrolledText(
-            body, width=60, height=9, font=(FONT, 10), wrap="word", relief="flat", bd=0,
+            body, width=60, height=5, font=(FONT, 10), wrap="word", relief="flat", bd=0,
             bg=C["card"], fg=C["text"], highlightthickness=1, highlightbackground=C["border"],
             highlightcolor=C["border"], padx=px(10), pady=px(8))
         out.pack(fill="both", expand=True)  # takes up any spare room of the fixed-size window
         out.tag_config("hint", foreground=C["muted"])
         out.tag_config("err", foreground=C["bad"])
-        write(tr("按上方按鈕執行操作，進度會顯示在這裡。", "Click a button above; progress is shown here."),
+        write(tr("按上方按鈕執行操作，進度會顯示在這裡。滑鼠停在按鈕上可以看到說明。",
+                 "Click a button above; progress is shown here. Rest the mouse on a button for what it does."),
               "hint")
 
         foot = tk.Frame(body, bg=C["bg"])
         foot.pack(fill="x", pady=(px(10), 0))
         w["auto"] = tk.BooleanVar(value=auto_update_check())
-        tk.Checkbutton(foot, text=tr("自動檢查新版本", "Check for updates automatically"), variable=w["auto"],
-                       command=on_auto_update, font=(FONT, 10), fg=C["text"], bg=C["bg"], activebackground=C["bg"],
-                       selectcolor=C["card"], highlightthickness=0, bd=0, cursor="hand2").pack(side="left")
-        rim, b = make_button(foot, tr("解除安裝", "Uninstall"), on_uninstall, "danger")
+        cb = tk.Checkbutton(foot, text=tr("自動檢查新版本", "Check for updates automatically"), variable=w["auto"],
+                            command=on_auto_update, font=(FONT, 10), fg=C["text"], bg=C["bg"],
+                            activebackground=C["bg"], selectcolor=C["card"], highlightthickness=0, bd=0,
+                            cursor="hand2")
+        cb.pack(side="left")
+        tip(cb, tr("開啟後，每 6 小時以及開啟控制台時會連到 GitHub 檢查新版本（GitHub 會看到這台電腦的 IP 位址）。預設關閉。",
+                   "When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel "
+                   "opens (GitHub sees this computer's IP address). Off by default."))
+        rim, b = make_button(foot, tr("解除安裝", "Uninstall"), on_uninstall, "danger",
+                             tr("移除背景監控、捷徑、誘餌檔、程式資料夾，以及紀錄檔和設定。",
+                                "Removes background monitoring, the shortcut, the canary files, the program folder, "
+                                "and the log and settings."))
         b.config(font=(FONT, 10), padx=px(10), pady=px(4), width=10)  # same width in both languages
         rim.pack(side="right")
-        rim, b = make_button(foot, tr("清除紀錄檔", "Clear log"), on_clear_log, "danger")
-        b.config(font=(FONT, 10), padx=px(10), pady=px(4), width=10, fg=C["muted"])
-        rim.pack(side="right", padx=(0, px(4)))
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     if _LANG_ARG or saved_lang():

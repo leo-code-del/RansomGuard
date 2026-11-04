@@ -80,20 +80,22 @@ Any one of these triggers it:
 
 ## Control panel
 
-| Button | What it does |
-| --- | --- |
-| **Install and start monitoring** | Installs background monitoring with the version that is running and starts it, without contacting GitHub |
-| **Update to the latest version** | Updates to the latest release from GitHub, installs it and starts monitoring |
-| **Restore network and restart monitoring** | Restores the network after a false alarm |
-| **Stop monitoring** | Stops it for now; it starts again at the next sign-in |
-| **Preview warning** | Shows what the warning looks like, without cutting the network |
-| **Open log** | Opens `%LOCALAPPDATA%\RansomGuard\guard.log` (entries older than 30 days are removed) |
-| **Check for updates automatically** (bottom left) | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
-| **Clear log** | Empties the log, which lists the files and programs that were detected |
-| **Uninstall** | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder and the log and settings |
-| **English / 中文(繁體)** (top right) | Switches the interface language |
+The buttons are in two groups. Rest the mouse on a button to see what it does. Only the button you need right now is colored: **Install and start monitoring** when monitoring isn't running, **Restore network** while the network is cut, and the update button when a newer version is known.
 
-The first time you open the control panel, you choose the language. The background monitor's warnings use the same language.
+| | Button | What it does |
+| --- | --- | --- |
+| **Protection** | **Install and start monitoring** | Installs background monitoring with the version that is running and starts it, without contacting GitHub |
+| | **Stop monitoring** | Stops it for now; it starts again at the next sign-in |
+| | **Restore network and restart monitoring** | Restores the network after a false alarm |
+| **Tools** | **Check for updates** | Asks GitHub whether there is a newer version and tells you; if there is, asks whether to update |
+| | **Preview warning** | Shows what the warning looks like, without cutting the network |
+| | **Open log** | Opens `%LOCALAPPDATA%\RansomGuard\guard.log` (entries older than 30 days are removed) |
+| | **Clear log** | Empties the log, which lists the files and programs that were detected |
+| **Bottom** | **Check for updates automatically** | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
+| | **Uninstall** | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder and the log and settings |
+| **Top right** | **English / 中文(繁體)** | Switches the interface language |
+
+The **Progress** box shows what the button you clicked is doing. The first time you open the control panel, you choose the language; the background monitor's warnings use the same language.
 
 <details>
 <summary><b>Command-line options</b></summary>
@@ -114,7 +116,7 @@ RansomGuard.exe --lang en    Use English for this run (zh = 中文(繁體))
 
 ## Updates
 
-- **Updating by hand:** click **Update to the latest version**. It checks GitHub for a newer release, downloads it, verifies it against the SHA-256 that GitHub publishes, installs it and reopens the control panel with the new version. Without an internet connection it simply reinstalls the current version. The current version number is shown in the top-left corner of the control panel.
+- **Checking by hand:** click **Check for updates**. It asks GitHub and tells you whether you have the latest version. If there is a newer one, it asks whether to update; with **Yes** it downloads it, verifies it against the SHA-256 that GitHub publishes, installs it and reopens the control panel with the new version. The current version number is shown in the top-left corner of the control panel.
 - **Being told about new versions:** tick **Check for updates automatically** at the bottom left of the control panel. The background monitor then checks GitHub two minutes after you sign in and every 6 hours, and the control panel checks when it opens (the update button then reads **Update to v…** and turns blue). Answer **Yes** and it updates by itself; each version is asked about once per sign-in. It is off by default, because each check shows GitHub your IP address (see [Privacy](PRIVACY.md)); versions before 1.7.3 always checked.
 - **You don't have to update.** Answer **No** when asked, and monitoring continues with the version you have. **Install and start monitoring** never contacts GitHub: it installs the version that is running and starts monitoring with it.
 
@@ -170,7 +172,7 @@ It never deletes your own files, with two exceptions listed under [Things that c
 
 By default RansomGuard doesn't connect to the internet by itself. Only the exe ever connects, and only to GitHub:
 
-- when you click **Update to the latest version** (or run it with `--update` or `--install`);
+- when you click **Check for updates**, and to download a new version you agreed to (or when you run it with `--update` or `--install`);
 - every 6 hours and when the control panel opens, if you turn on **Check for updates automatically** (off by default, because every check shows GitHub your IP address).
 
 It downloads a new version from `github.com` only after you agree, and checks the file's SHA-256 before installing it. No information about you or your files is sent anywhere. The Python version never connects to the internet. Microsoft Defender scans run on your computer; whether Defender itself contacts Microsoft depends on your Defender settings.
@@ -236,7 +238,7 @@ Keep using antivirus software (such as Microsoft Defender), install Windows upda
 - **False alarms cut the network.** This happens if you touch a canary file, if a program renames 10 or more files to an unusual extension within 30 seconds, or if files named like ransom notes (e.g. `how to recover files.txt`) appear in three folders.
 - **Legitimate maintenance is stopped.** Backup software or an administrator running `wbadmin delete backup`, `vssadmin delete shadows` or `wevtutil cl` is treated as ransomware: the command is ended and the network is cut.
 - **Normal programs can be paused by a false alarm.** Editors, browsers and OneDrive write all the time and may be paused (and freeze) until you restore the network from the control panel. If you restore with `restore_network.bat` instead, they stay paused until the computer restarts.
-- **You won't hear about new versions unless you ask.** Automatic update checks are off by default for privacy, so improvements and fixes reach you only if you click **Update to the latest version** now and then, or turn on **Check for updates automatically**.
+- **You won't hear about new versions unless you ask.** Automatic update checks are off by default for privacy, so improvements and fixes reach you only if you click **Check for updates** now and then, or turn on **Check for updates automatically**.
 - **Uninstalling deletes the whole `C:\Program Files\RansomGuard` folder**, including any files you put there yourself.
 - A file of your own named exactly like a canary file (e.g. `!!!_canary_do_not_delete.docx`) in Documents or Pictures is replaced by the canary file.
 
