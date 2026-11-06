@@ -76,6 +76,8 @@ python -m unittest discover -s tests -v
 
 有些測試會實際使用唯讀的 Windows 功能：透過 WMI 監看新程序、用 Defender 掃描暫存檔，以及讀取排程工作。
 
+程式的每個部分各有一個測試檔（`tests/test_detection.py`、`test_response.py`、`test_network.py`……），要找某個模組的測試直接看對應的檔案。共用的部分放在 `tests/support.py`：`rg` 物件、上面說的安全網（每個測試檔都用 `setUpModule` 啟用，並各自拿到全新的沙盒），以及 `TempDirTest`、`real_zip()`、`overwrite()` 等輔助工具。新增測試檔時，開頭要加上 `setUpModule, tearDownModule = support.setUpModule, support.tearDownModule`；忘了加的話 `test_suite.py` 會失敗。只跑單一檔案：`python -m unittest discover -s tests -p test_backup.py`。
+
 ## 套件更新
 
 [Dependabot](.github/dependabot.yml) 每週會檢查一次，鎖定版本的 GitHub Action 或 Python 套件有新版時就開 PR。CI 會在 Windows 上打包和測試，通過了才合併。Python 本身在 workflow 裡維持固定版本，等確認新版能搭配 PyInstaller 使用才更新。

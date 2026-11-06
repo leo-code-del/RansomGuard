@@ -76,6 +76,8 @@ The tests only use temporary folders and never touch your files, the network set
 
 Some tests use read-only Windows features for real: watching new processes through WMI, Defender scans of temporary files, and reading scheduled tasks.
 
+There is one test file per part of the program (`tests/test_detection.py`, `test_response.py`, `test_network.py`...), so the tests for a module are where you'd look for them. What they share is in `tests/support.py`: the `rg` object, the safety net above (each test file installs it with `setUpModule`, and gets a fresh sandbox), and helpers such as `TempDirTest`, `real_zip()` and `overwrite()`. A new test file starts with `setUpModule, tearDownModule = support.setUpModule, support.tearDownModule`; `test_suite.py` fails if one doesn't. To run one file: `python -m unittest discover -s tests -p test_backup.py`.
+
 ## Dependency updates
 
 [Dependabot](.github/dependabot.yml) opens a pull request once a week when a newer version of a pinned GitHub Action or Python package exists. CI builds and tests it on Windows; merge it only if CI passes. Python itself stays pinned in the workflows until a newer version is checked to work with PyInstaller.
