@@ -17,8 +17,7 @@ REQUIRED = {
     "Tk data (_tk_data)": lambda n: n.startswith(("_tk_data/", "_tk_data\\")),
     "Tk library (tk*.dll)": lambda n: n.lower().startswith("tk") and n.lower().endswith(".dll"),
     "icon (icon.ico)": lambda n: n == "icon.ico",
-    **{f"notification-area icon (tray-{s}.ico)": (lambda s: lambda n: n == f"tray-{s}.ico")(s)
-       for s in ("ok", "paused", "cut")},
+    "notice icon (tray-cut.ico)": lambda n: n == "tray-cut.ico",
 }
 
 

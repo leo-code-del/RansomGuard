@@ -102,7 +102,10 @@ def run(args, stop=None):
     if config.DEFENDER_SCAN_DOWNLOADS and config.IS_WINDOWS and defender.MPCMDRUN.is_file():
         scanner = defender.DownloadScanner()
         scanner.start()
-    handler = detection.make_handler(canaries, trigger, args.dry_run, scanner.add if scanner else None)
+    excluded = folders.excluded_dirs()
+    if excluded:
+        log.info(tr("不偵測的子資料夾：%s", "Subfolders file detection skips: %s"), "; ".join(str(d) for d in excluded))
+    handler = detection.make_handler(canaries, trigger, args.dry_run, scanner.add if scanner else None, excluded)
 
     def start_observer():
         obs = Observer()
@@ -159,8 +162,8 @@ def run(args, stop=None):
     if config.FROZEN and not args.dry_run:
         threading.Thread(target=updates.update_watcher, args=(stop,), daemon=True).start()
     icon = None
-    if config.IS_WINDOWS and not args.dry_run:  # the notification-area icon (it follows its setting by itself)
-        icon = tray.Tray(lambda: tray.tray_state(handler.paused_until, storage.network_cut(storage.load_state())))
+    if config.IS_WINDOWS and not args.dry_run:  # the notice by the clock while the network is cut (it follows its setting)
+        icon = tray.Tray(lambda: tray.tray_message(storage.network_cut(storage.load_state())))
         icon.start()
     restarts, restarts_since = 0, time.time()
 

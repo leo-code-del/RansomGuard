@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import backup, canary, config, detection, install, storage, winapi
+from . import backup, canary, config, detection, folders, install, storage, winapi
 from .config import log, tr
 
 
@@ -163,6 +163,15 @@ def check_state_permissions():
     return OK, tr("狀態資料夾只有系統管理員能修改", "Only administrators can change the state folder")
 
 
+def check_exclusions():
+    """The subfolders file detection skips (the user's choice; shown so it isn't forgotten)."""
+    excluded = folders.excluded_dirs()
+    if not excluded:
+        return []
+    names = tr("、", ", ").join(str(d) for d in excluded[:3]) + (tr(" 等", " ...") if len(excluded) > 3 else "")
+    return [(OK, tr(f"不偵測 {len(excluded)} 個子資料夾：{names}", f"{len(excluded)} subfolder(s) not checked: {names}"))]
+
+
 def check_network_and_backup():
     out = []
     paused = storage.detection_paused_until()
@@ -250,6 +259,7 @@ def run_selfcheck(report) -> list:
     step(check_canary_files)
     step(check_state_permissions)
     step(check_errors, lines)
+    step(check_exclusions)
     step(check_network_and_backup)
     step(drill)
     fails, warns = results.count(FAIL), results.count(WARN)

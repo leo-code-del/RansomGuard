@@ -310,13 +310,15 @@ def is_ransom_note(name: str) -> bool:
     return bool(NOTE_PATTERN.search(re.sub(r"ransom[\W_]*guard", "", p.stem, flags=re.IGNORECASE)))
 
 
-def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
-    """on_new_file(path) is told about every file that is created or renamed (for DownloadScanner)."""
+def make_handler(canaries, on_trigger, dry_run, on_new_file=None, excluded=()):
+    """on_new_file(path) is told about every file that is created or renamed (for DownloadScanner). Nothing in the
+    `excluded` folders is counted (canary files and new downloads are looked at as always)."""
     from watchdog.events import FileSystemEventHandler
 
     class Guard(FileSystemEventHandler):
         def __init__(self):
             self.canaries = {norm(p) for p in canaries}
+            self.excluded = [norm(d).rstrip(os.sep) + os.sep for d in excluded]
             self.broken = deque()   # (time, normalized path, path)
             self.extchg = deque()
             self.notes = deque()    # (time, normalized folder, the note in it)
@@ -401,6 +403,8 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
                 on_new_file(path)
             if t in ("moved", "deleted"):
                 self._uncount(src)
+            if self.excluded and norm(path).startswith(tuple(self.excluded)):
+                return  # a folder the user excluded (it changes all the time on its own)
 
             # 3. Renamed to unknown extensions
             if suspicious_ext(t, src, dest):

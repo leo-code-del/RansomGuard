@@ -15,7 +15,7 @@ Modules, roughly in the order a trigger goes through them:
   updates    new versions from GitHub
   backup     whether files are backed up (File History, OneDrive) and the backup reminder
   selftest   the control panel's self-check: is protection really working, and a drill
-  tray       the background monitor's notification-area icon
+  tray       the notice by the clock while the network is cut
   gui        the control panel
   app        the monitor's main loop and the command line
 

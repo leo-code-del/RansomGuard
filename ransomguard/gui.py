@@ -463,45 +463,67 @@ def gui(auto_update=False):
                      bg=C["bg"], justify="left", wraplength=px(440)).pack(anchor="w", pady=gap)
         label(tr("一律監控", "Always watched"), bold=True)
         label("\n".join(str(d) for d in folders.default_watch_dirs()), gap=(px(2), px(12)))
-        label(tr("另外監控的資料夾（例如 D 槽、隨身碟、NAS）", "Also watched (e.g. another drive, a USB drive, a NAS)"),
-              bold=True)
-        lb = tk.Listbox(pad, font=(F, 10), height=6, width=54, relief="flat", bd=0, highlightthickness=1,
-                        highlightbackground=C["border"], activestyle="none", selectbackground="#dbeafe",
-                        selectforeground=C["text"])
-        lb.pack(fill="x", pady=(px(4), px(8)))
-        for d in folders.extra_watch_dirs():
-            lb.insert("end", str(d))
 
-        def add():
-            path = filedialog.askdirectory(parent=dlg, title=title, mustexist=True)
-            if not path:
-                return
-            path = os.path.normpath(path)
-            problem = folders.watch_problem(path)
-            if problem:
-                messagebox.showwarning(title, f"{path}\n\n{problem}", parent=dlg)
-            elif norm(path) not in {norm(p) for p in lb.get(0, "end")}:
-                lb.insert("end", path)
+        def folder_list(heading, items, problem):
+            """A titled list of folders with Add and Remove; problem(path) says why one can't be added ("" if it
+            can)."""
+            label(heading, bold=True)
+            lb = tk.Listbox(pad, font=(F, 10), height=3, width=54, relief="flat", bd=0, highlightthickness=1,
+                            highlightbackground=C["border"], activestyle="none", selectbackground="#dbeafe",
+                            selectforeground=C["text"])
+            lb.pack(fill="x", pady=(px(4), px(8)))
+            for d in items:
+                lb.insert("end", str(d))
 
-        def remove():
-            for i in reversed(lb.curselection()):
-                lb.delete(i)
-        row = tk.Frame(pad, bg=C["bg"])
-        row.pack(fill="x")
-        make_button(row, tr("新增資料夾…", "Add folder…"), add, "secondary", track=False)[0].pack(side="left")
-        make_button(row, tr("移除", "Remove"), remove, "secondary", track=False)[0].pack(side="left", padx=(px(6), 0))
-        label(tr("每個監控的資料夾都會放入隱藏的誘餌檔。儲存後背景監控會重新啟動。",
-                 "Each watched folder gets hidden canary files. Saving restarts background monitoring."),
-              muted=True, gap=(px(12), px(10)))
+            def add():
+                path = filedialog.askdirectory(parent=dlg, title=title, mustexist=True)
+                if not path:
+                    return
+                path = os.path.normpath(path)
+                why = problem(path)
+                if why:
+                    messagebox.showwarning(title, f"{path}\n\n{why}", parent=dlg)
+                elif norm(path) not in {norm(p) for p in lb.get(0, "end")}:
+                    lb.insert("end", path)
+
+            def remove():
+                for i in reversed(lb.curselection()):
+                    lb.delete(i)
+            row = tk.Frame(pad, bg=C["bg"])
+            row.pack(fill="x")
+            make_button(row, tr("新增資料夾…", "Add folder…"), add, "secondary", track=False)[0].pack(side="left")
+            make_button(row, tr("移除", "Remove"), remove, "secondary", track=False)[0].pack(side="left",
+                                                                                           padx=(px(6), 0))
+            return lb
+
+        lb = folder_list(tr("另外監控的資料夾（例如 D 槽、隨身碟、NAS）", "Also watched (e.g. another drive, a USB drive, a NAS)"),
+                         folders.extra_watch_dirs(), folders.watch_problem)
+        label(nb(tr("每個監控的資料夾都會放入隱藏的誘餌檔。", "Each watched folder gets hidden canary files.")),
+              muted=True, gap=(px(6), px(14)))
+        # (checked against the watched folders as listed now, including ones added but not saved yet)
+        skip = folder_list(tr("不偵測的子資料夾（例如 node_modules、程式的輸出資料夾）",
+                              "Not checked (e.g. node_modules, a build output folder)"),
+                           folders.excluded_dirs(),
+                           lambda p: folders.exclude_problem(p, folders.default_watch_dirs()
+                                                             + [Path(x) for x in lb.get(0, "end")]))
+        label(nb(tr("只排除會自己大量變動的資料夾：裡面的檔案變動不會被計算，勒索病毒在這裡加密不會被發現；誘餌檔和危險指令照常監控。"
+                    "儲存後背景監控會重新啟動。",
+                    "Exclude only folders that change a lot on their own: what happens in them isn't counted, so "
+                    "ransomware encrypting them goes unnoticed; canary files and dangerous commands are still "
+                    "watched. Saving restarts background monitoring.")),
+              muted=True, gap=(px(6), px(10)))
 
         def save():
             new = [Path(p) for p in lb.get(0, "end")]
+            skipped = [Path(p) for p in skip.get(0, "end")]
             removed = [d for d in folders.extra_watch_dirs() if norm(d) not in {norm(n) for n in new}]
             dlg.destroy()
 
             def work(rep):
                 folders.save_extra_watch_dirs(new)
-                rep(tr(f"已儲存，另外監控 {len(new)} 個資料夾。", f"Saved: {len(new)} more folder(s) watched."))
+                folders.save_excluded_dirs(skipped)
+                rep(tr(f"已儲存：另外監控 {len(new)} 個資料夾，不偵測 {len(skipped)} 個子資料夾。",
+                       f"Saved: {len(new)} more folder(s) watched, {len(skipped)} subfolder(s) not checked."))
                 installed = bool(install.task_state())
                 if installed:
                     install.stop_monitor()  # before its canaries go, or removing them would trigger it
@@ -936,12 +958,13 @@ def gui(auto_update=False):
                           tr("每 6 小時以及開啟控制台時連到 GitHub 檢查新版本；GitHub 會看到這台電腦的 IP 位址。預設關閉。",
                              "Asks GitHub for new versions every 6 hours and when the control panel opens; GitHub "
                              "sees this computer's IP address. Off by default."))
-        w["tray"] = check(tr("在通知區域顯示圖示", "Show an icon in the notification area"), tray.tray_enabled(),
-                          lambda: config.set_setting("tray_icon", bool(w["tray"].get())),
-                          tr("工作列右下角的盾牌：綠點已受到保護、橘點偵測暫停中、紅點網路已切斷；點它開啟控制台。"
-                             "圖示不見了，表示背景監控沒在執行。",
-                             "A shield by the clock: a green dot means protected, orange detection paused, red the "
-                             "network cut; click it for the control panel. No icon means monitoring isn't running."))
+        w["tray"] = check(tr("網路被切斷時在時鐘旁顯示提示", "Show a notice by the clock when the network is cut"),
+                          tray.tray_enabled(), lambda: config.set_setting("tray_icon", bool(w["tray"].get())),
+                          tr("偵測到疑似勒索病毒、網路被切斷時，時鐘旁會出現紅點盾牌和通知，點它開啟控制台查看偵測報告。"
+                             "平常（包括暫停偵測時）不會出現。",
+                             "When possible ransomware is detected and the network is cut, a shield with a red dot and a "
+                             "notification appear by the clock; click for the control panel and the detection report. "
+                             "Nothing shows otherwise, also while detection is paused."))
         item(host, "uninstall", tr("解除安裝", "Uninstall"), on_uninstall,
              tr("移除背景監控、捷徑、誘餌檔、程式資料夾，以及紀錄檔和設定。",
                 "Removes background monitoring, the shortcut, the canary files, the program folder, and the log "

@@ -139,7 +139,7 @@ class SelfCheckTests(TempDirTest):
                             ("check_monitor_log", lambda lines: [("warn", "older"), ("ok", "procmon")]),
                             ("check_canary_files", lambda: 1 / 0),  # a check that breaks is reported, the rest go on
                             ("check_state_permissions", lambda: ("ok", "safe")),
-                            ("check_errors", lambda lines: ("ok", "no errors")),
+                            ("check_errors", lambda lines: ("ok", "no errors")), ("check_exclusions", lambda: []),
                             ("check_network_and_backup", lambda: [("ok", "net"), ("warn", "backup")]),
                             ("drill", lambda: [("ok", "drill")])):
             self.patch(name, value)

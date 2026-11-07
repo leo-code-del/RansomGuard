@@ -50,3 +50,36 @@ def save_extra_watch_dirs(dirs):
     d = storage.state_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / "watch.json").write_text(json.dumps([str(p) for p in dirs], ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ---- subfolders the user excluded: folders that change all the time on their own (node_modules, a build output)
+# File detection doesn't count what happens in them; canary files and dangerous commands are watched as always.
+# Kept in the administrators-only state folder, so a program running as the user can't hide its work in one.
+def exclude_problem(path, watched) -> str:
+    """Why a folder can't be excluded ("" if it can): it must be inside one of the `watched` folders, not one of
+    them (excluding a whole watched folder would leave it unprotected)."""
+    p = norm(path)
+    if not os.path.isdir(p):
+        return tr("找不到這個資料夾", "This folder doesn't exist")
+    roots = [norm(d) for d in watched]
+    if p in roots:
+        return tr("這是監控的資料夾本身；只能排除裡面的子資料夾", "This is a watched folder itself; only folders inside "
+                  "one can be excluded")
+    if not any(p.startswith(r.rstrip(os.sep) + os.sep) for r in roots):
+        return tr("這個資料夾不在監控範圍內，不需要排除", "This folder isn't watched, so it needn't be excluded")
+    return ""
+
+
+def excluded_dirs() -> list:
+    """The subfolders the user excluded."""
+    try:
+        dirs = json.loads((storage.state_dir() / "exclude.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [Path(d) for d in dirs if isinstance(d, str) and os.path.isabs(d)] if isinstance(dirs, list) else []
+
+
+def save_excluded_dirs(dirs):
+    d = storage.state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "exclude.json").write_text(json.dumps([str(p) for p in dirs], ensure_ascii=False, indent=2), encoding="utf-8")

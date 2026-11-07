@@ -109,7 +109,7 @@ def state_dir() -> Path:
 
 
 _state_secured = False
-STATE_FILES = ("state.json", "canaries.json", "watch.json", "monitor_stopped", "detection_paused")
+STATE_FILES = ("state.json", "canaries.json", "watch.json", "exclude.json", "monitor_stopped", "detection_paused")
 
 
 def _is_link(p: Path) -> bool:

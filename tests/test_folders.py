@@ -41,6 +41,29 @@ class WatchFolderTests(TempDirTest):
         (self.dir / "watch.json").write_text("not json", encoding="utf-8")
         self.assertEqual(rg.extra_watch_dirs(), [])
 
+    def test_which_subfolders_may_be_excluded(self):
+        watched = [self.dir / "Documents", self.dir / "D"]
+        build = self.dir / "D" / "repo" / "build"
+        build.mkdir(parents=True)
+        self.assertEqual(rg.exclude_problem(build, watched), "")
+        self.assertIn("watched folder itself", rg.exclude_problem(self.dir / "D", watched),
+                      "a whole watched folder can't be left unprotected")
+        self.assertIn("isn't watched", rg.exclude_problem(self.dir / "System", watched))
+        self.assertIn("doesn't exist", rg.exclude_problem(self.dir / "D" / "missing", watched))
+        (self.dir / "Documents2").mkdir()
+        self.assertIn("isn't watched", rg.exclude_problem(self.dir / "Documents2", watched),
+                      "a look-alike name (Documents2) isn't inside Documents")
+        drive = str(self.dir)[:3]  # a whole drive watched (D:\ on the user's computer): its folders can be excluded
+        self.assertEqual(rg.exclude_problem(build, [drive]), "")
+
+    def test_excluded_subfolders_are_saved_in_the_state_folder(self):
+        self.assertIn("exclude.json", rg.STATE_FILES, "kept when the state folder is secured")
+        self.assertEqual(rg.excluded_dirs(), [])
+        rg.save_excluded_dirs([self.dir / "D" / "build", "relative\\path"])
+        self.assertEqual(rg.excluded_dirs(), [self.dir / "D" / "build"], "only absolute paths")
+        (self.dir / "exclude.json").write_text('{"not": "a list"}', encoding="utf-8")
+        self.assertEqual(rg.excluded_dirs(), [])
+
     def test_the_monitor_watches_and_plants_canaries_in_added_folders(self):
         rg.save_extra_watch_dirs([self.dir / "D"])
         seen = {}
@@ -53,6 +76,19 @@ class WatchFolderTests(TempDirTest):
                 rg.run(argparse.Namespace(watch=None, dry_run=False))
         self.assertIn(self.dir / "D", seen["dirs"])
         self.assertIn(self.dir / "Music", seen["dirs"])  # and canaries go into every watched folder
+
+    def test_the_monitor_hands_the_excluded_subfolders_to_detection(self):
+        rg.save_excluded_dirs([self.dir / "D" / "build"])
+        handler = mock.Mock(side_effect=SystemExit(0))
+        with mock.patch.object(rg, "plant_canaries", lambda dirs, upgrade=False: []), \
+                mock.patch.object(rg, "make_handler", handler), \
+                mock.patch.object(rg, "is_admin", lambda: True), mock.patch.object(rg, "single_instance", lambda: True), \
+                mock.patch.object(rg, "exit_with_launcher", lambda: None), \
+                mock.patch.object(rg, "cleanup_old_files", lambda: None), mock.patch.object(rg, "IS_WINDOWS", True), \
+                mock.patch.object(rg, "keep_restart_trigger", lambda: None):
+            with self.assertRaises(SystemExit):
+                rg.run(argparse.Namespace(watch=None, dry_run=False))
+        self.assertEqual(handler.call_args.args[4], [self.dir / "D" / "build"])
 
 
 if __name__ == "__main__":

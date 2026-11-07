@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Generate RansomGuard's icon: icon.ico (for the exe) and icon.png (for the README), and the notification-area
-icons tray-ok.ico, tray-paused.ico and tray-cut.ico (the shield with a green, orange or red dot).
+"""Generate RansomGuard's icon: icon.ico (for the exe) and icon.png (for the README), and tray-cut.ico (the shield
+with a red dot), shown by the clock while the network is cut.
 
   python make_icon.py
 
@@ -88,9 +88,9 @@ def render(small=False):
     return img
 
 
-# the notification area shows 16 px icons (20, 24, 32 on scaled displays); the dot says the state
+# the notification area shows 16 px icons (20, 24, 32 on scaled displays); red as in the control panel
 TRAY_SIZES = [16, 20, 24, 32, 40, 48]
-TRAY = {"ok": "#16a34a", "paused": "#d97706", "cut": "#dc2626"}  # the control panel's colors
+TRAY = {"cut": "#dc2626"}
 
 
 def tray(small, color):
@@ -113,7 +113,7 @@ def main():
         icon = tray(small, color)
         sized = [icon.resize((n, n), Image.LANCZOS) for n in TRAY_SIZES]
         sized[-1].save(f"tray-{state}.ico", sizes=[(n, n) for n in TRAY_SIZES], append_images=sized[:-1])
-    print("Created icon.ico, icon.png and tray-ok.ico, tray-paused.ico, tray-cut.ico")
+    print("Created icon.ico, icon.png and tray-cut.ico")
 
 
 if __name__ == "__main__":

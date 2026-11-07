@@ -276,6 +276,24 @@ class HandlerTests(TempDirTest):
         self.assertEqual(len(self.fired), 1)
         self.assertEqual(self.h.last_files, paths, "the files as they are named, most recent last")
 
+    def test_excluded_subfolders_are_not_counted_but_canaries_are_watched(self):
+        build = self.dir / "docs" / "repo" / "build"
+        h = rg.make_handler(self.canaries, self.fired.append, dry_run=True, excluded=[build])
+        for i in range(rg.BROKEN_THRESHOLD * 2):  # a build writing compressed output: not counted
+            h.on_any_event(FileModifiedEvent(self.file(f"docs/repo/build/chunk{i}.docx", random_bytes())))
+            h.on_any_event(FileMovedEvent(str(build / f"a{i}.js"), str(build / f"a{i}.js.tmp123")))
+        self.assertEqual(self.fired, [])
+        self.assertEqual((len(h.broken), len(h.extchg)), (0, 0))
+        # a look-alike name next to it is not excluded
+        for i in range(rg.BROKEN_THRESHOLD):
+            h.on_any_event(FileModifiedEvent(self.file(f"docs/repo/build2/f{i}.docx", random_bytes())))
+        self.assertEqual(len(self.fired), 1)
+        h2 = rg.make_handler(self.canaries, self.fired.append, dry_run=True, excluded=[self.dir / "docs" / "repo"])
+        overwrite(self.canaries[0], random_bytes())  # canary files are watched as always
+        h2.on_any_event(FileModifiedEvent(str(self.canaries[0])))
+        self.assertEqual(len(self.fired), 2)
+        self.assertIn("Canary", self.fired[1])
+
     def test_paused_file_detection_still_watches_canaries(self):
         self.h.paused_until = time.time() + 60
         for i in range(rg.BROKEN_THRESHOLD * 2):  # bulk work while paused: not counted
