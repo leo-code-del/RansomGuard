@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 MODULES = [importlib.import_module(f"ransomguard.{name}") for name in (
     "config", "winapi", "storage", "folders", "canary", "detection", "processes", "response", "defender",
-    "network", "install", "updates", "backup", "selftest", "gui", "app")]
+    "network", "install", "updates", "backup", "selftest", "tray", "gui", "app")]
 
 
 class _Namespace:
@@ -79,12 +79,27 @@ rg.log.propagate = False
 rg.init_lang("en")
 
 REAL = {name: getattr(rg, name)
-        for name in ("fullscreen_alert", "set_paused", "_known_folder", "state_dir", "secure_state_dir")}
+        for name in ("fullscreen_alert", "set_paused", "_known_folder", "state_dir", "secure_state_dir", "Tray")}
 SANDBOX = Path(tempfile.mkdtemp(prefix="rg_sandbox_"))
 TEST_PID = os.getpid()  # saved now: some tests replace os.getpid
 # the interpreter itself; in a venv, sys.executable is a small launcher that starts this as a child process
 BASE_PYTHON = getattr(sys, "_base_executable", None) or sys.executable
 _guards = []
+
+
+class NoTray:
+    """The notification-area icon, not shown: what the monitor gets in the tests. `made` keeps every one."""
+    made = []
+
+    def __init__(self, state):
+        self.state, self.started, self.stopped = state, False, False
+        NoTray.made.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
 
 
 def forbidden(what):
@@ -140,6 +155,7 @@ def setUpModule():
             ("secure_state_dir", lambda: None),
             ("alert", lambda title, msg: None),
             ("notice", lambda title, msg: None),
+            ("Tray", NoTray),  # the notification-area icon would show on the screen
             # the backup check reads File History's record and folder: the sandbox's, never this computer's
             ("_file_history_registry_time", lambda: None),
             ("_file_history_folder", lambda: SANDBOX / "FileHistory" / "Configuration")):

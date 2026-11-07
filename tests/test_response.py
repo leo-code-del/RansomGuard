@@ -217,6 +217,9 @@ class PauseTests(TempDirTest):
         script = (ROOT / "build.bat").read_text(encoding="utf-8")
         self.assertIn(r"--icon ..\icon.ico", script)
         self.assertIn(r'--add-data "..\icon.ico;."', script)
+        for state in ("ok", "paused", "cut"):  # the notification-area icons
+            self.assertIn(rf'--add-data "..\tray-{state}.ico;."', script)
+            self.assertTrue((ROOT / f"tray-{state}.ico").is_file())
         self.assertIn("check_build.py", script)  # an exe without Tcl/Tk data doesn't start (v1.7.1)
         # code signing (SignPath) requires the product name and version in every signed exe
         self.assertIn("make_version_info.py build\\version_info.txt", script)
@@ -254,11 +257,14 @@ class PauseTests(TempDirTest):
             import check_build
         except ImportError:
             self.skipTest("PyInstaller is not installed (pip install -r requirements-build.txt)")
-        good = ["icon.ico", "tk86t.dll", "tcl86t.dll", "_tcl_data/init.tcl", "_tk_data/tk.tcl", "base_library.zip"]
+        trays = ["tray-ok.ico", "tray-paused.ico", "tray-cut.ico"]
+        good = ["icon.ico", "tk86t.dll", "tcl86t.dll", "_tcl_data/init.tcl", "_tk_data/tk.tcl", "base_library.zip"] + trays
         self.assertEqual(check_build.missing(good), [])
-        v171 = ["icon.ico", "tcl90.dll", "base_library.zip"]  # what the broken v1.7.1 contained
+        v171 = ["icon.ico", "tcl90.dll", "base_library.zip"] + trays  # what the broken v1.7.1 contained
         self.assertEqual(len(check_build.missing(v171)), 3)
         self.assertEqual(check_build.missing([n for n in good if n != "icon.ico"]), ["icon (icon.ico)"])
+        self.assertEqual(check_build.missing([n for n in good if n != "tray-cut.ico"]),
+                         ["notification-area icon (tray-cut.ico)"])
         modules = {"ransomguard"} | {m.__name__ for m in MODULES}
         self.assertEqual(check_build.missing_modules(modules), [])
         self.assertEqual(check_build.missing_modules(modules - {"ransomguard.gui"}), ["ransomguard.gui"])

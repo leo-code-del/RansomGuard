@@ -97,6 +97,7 @@ Windows 10 / 11 · 英文與中文(繁體)介面 · [所有版本](https://githu
 | | **清除紀錄檔** | 清空記錄了偵測到的檔案與程式的紀錄檔 |
 | **設定** | **監控的資料夾…** | 新增或移除預設以外要監控的資料夾，儲存後背景監控會重新啟動 |
 | | **自動檢查新版本** | 預設關閉。開啟後，RansomGuard 會每 6 小時以及開啟控制台時向 GitHub 查詢新版本 |
+| | **在通知區域顯示圖示** | 預設開啟。背景監控會在工作列時鐘旁顯示盾牌圖示：綠點已受到保護、橘點檔案偵測暫停中、紅點網路已切斷（不會閃爍）。滑鼠停在上面會用文字說明狀態，點它開啟控制台，按右鍵可以暫停檔案偵測 30 分鐘或恢復偵測。圖示不見了，表示監控沒在執行 |
 | | **解除安裝** | 移除背景監控、防護狀態檢查、桌面捷徑、誘餌檔、`C:\Program Files\RansomGuard` 資料夾、紀錄檔和設定，以及狀態資料 |
 | **右上角** | **English / 中文(繁體)** | 切換介面語言 |
 
@@ -147,7 +148,7 @@ RansomGuard.exe --lang en    這次用英文介面（zh＝中文(繁體)）
 | 位置 | 內容 |
 | --- | --- |
 | 每個監控的資料夾 | 3 個隱藏的誘餌檔（`0000 Scan index.docx`、`Household budget.xlsx`、`ZZ Archive notes.docx`） |
-| `%LOCALAPPDATA%\RansomGuard\` | `guard.log`（最多 4 個、每個 1 MB，超過 30 天的紀錄會被刪除）、`settings.json`（語言、是否自動檢查新版本、是否用其他程式備份、上次提醒備份的時間） |
+| `%LOCALAPPDATA%\RansomGuard\` | `guard.log`（最多 4 個、每個 1 MB，超過 30 天的紀錄會被刪除）、`settings.json`（語言、是否自動檢查新版本、是否用其他程式備份、上次提醒備份的時間、是否顯示通知區域圖示） |
 | `C:\ProgramData\RansomGuard\` | `state.json`（切斷或暫停了什麼，以及偵測報告：為什麼觸發、最多 50 個被判定像被加密的檔案，保留到你恢復網路為止）、`canaries.json`（建立了哪些誘餌檔）、`watch.json`（你加入的資料夾）、`monitor_stopped`（你什麼時候停止了監控）、`detection_paused`（檔案偵測暫停到什麼時候）。只有系統管理員能修改這個資料夾，你的帳號只能讀取 |
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`、`icon.ico`、`health_check.js` |
 | `%TEMP%` | exe 執行時會把自己解壓縮到一個 `_MEI…` 資料夾，結束時刪除。`MpCmdRun.log` 是 Microsoft Defender 的掃描程式為 RansomGuard 要求的掃描所留的紀錄 |

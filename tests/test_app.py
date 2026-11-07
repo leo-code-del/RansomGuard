@@ -207,6 +207,23 @@ class MonitorLoopTests(TempDirTest):
         self.assertTrue(any("paused by the user until" in m for m in logged.output), logged.output)
         self.assertTrue(any("File detection resumed" in m for m in logged.output), logged.output)
 
+    def test_the_monitor_shows_its_icon_while_it_runs(self):
+        support.NoTray.made.clear()
+        t = self.start()
+        self.assertEqual(len(support.NoTray.made), 1)
+        icon = support.NoTray.made[0]
+        self.assertTrue(icon.started)
+        self.assertEqual(icon.state()[0], "ok")
+        rg.pause_detection(30)
+        self.addCleanup(rg.resume_detection)
+        self.wait_for(lambda: icon.state()[0] == "paused")
+        self.assertEqual(icon.state()[0], "paused", "it follows a pause")
+        rg.save_state({"triggered_at": "2026-11-07 10:00:00"})
+        self.assertEqual(icon.state()[0], "cut", "and a cut network")
+        self.stop.set()
+        t.join(15)
+        self.assertTrue(icon.stopped, "it goes when monitoring ends")
+
     def test_the_monitor_puts_the_restart_trigger_back_when_it_starts(self):
         self.start()
         self.wait_for(lambda: self.restart_trigger_kept)

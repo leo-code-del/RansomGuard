@@ -97,6 +97,7 @@ The home page shows one thing: whether this computer is protected (**Protected**
 | | **Clear log** | Empties the log, which lists the files and programs that were detected |
 | **Settings** | **Watched folders…** | Adds or removes folders watched besides the default ones. Saving restarts background monitoring |
 | | **Check for updates automatically** | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
+| | **Show an icon in the notification area** | On by default. The background monitor shows a shield by the clock: a green dot means protected, orange file detection paused, red the network cut (it never blinks). Rest the mouse on it for the state in words, click it for the control panel, right-click it to pause file detection for 30 minutes or resume it. No icon means monitoring isn't running |
 | | **Uninstall** | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder, the log and settings and the state data |
 | **Top right** | **English / 中文(繁體)** | Switches the interface language |
 
@@ -147,7 +148,7 @@ RansomGuard.exe asks for administrator rights (User Account Control) when it sta
 | Where | What |
 | --- | --- |
 | Every watched folder | Three hidden canary files (`0000 Scan index.docx`, `Household budget.xlsx`, `ZZ Archive notes.docx`) |
-| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `settings.json` (language, automatic update checks, whether you back up with another program, when it last reminded you about a backup) |
+| `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `settings.json` (language, automatic update checks, whether you back up with another program, when it last reminded you about a backup, whether to show the notification-area icon) |
 | `C:\ProgramData\RansomGuard\` | `state.json` (what was cut off or paused, and the detection report: why it triggered and up to 50 files that looked encrypted, kept until you restore the network), `canaries.json` (which canary files it created), `watch.json` (folders you added), `monitor_stopped` (when you stopped monitoring), `detection_paused` (until when file detection is paused). Only administrators can change this folder; your account can read it |
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`, `icon.ico`, `health_check.js` |
 | `%TEMP%` | A `_MEI…` folder the exe unpacks itself into while it runs, removed when it exits. `MpCmdRun.log`, the log Microsoft Defender's scanner keeps of the scans RansomGuard asks for |

@@ -42,6 +42,7 @@ python ransom_guard.py --gui
 | `updates` | 從 GitHub 取得新版本 |
 | `backup` | 檔案有沒有備份（檔案歷程記錄、OneDrive）與備份提醒 |
 | `selftest` | 控制台的自我檢查：防護是否真的在運作，以及在暫存資料夾的演練 |
+| `tray` | 背景監控的通知區域圖示（圓點表示狀態，點它開啟控制台） |
 | `gui` | 控制台 |
 | `app` | 監控主迴圈與命令列 |
 
@@ -55,11 +56,11 @@ build.bat
 
 打包好的檔案在 `dist\RansomGuard.exe`。要用不在 PATH 裡的 Python，先設定 `PYTHON`，例如 `set PYTHON=C:\Python314\python.exe`。
 
-- `build.bat` 會把 `icon.ico` 打包進 exe。少了它，視窗、工作列和桌面捷徑都會顯示 PyInstaller 的預設圖示。
+- `build.bat` 會把 `icon.ico` 打包進 exe。少了它，視窗、工作列和桌面捷徑都會顯示 PyInstaller 的預設圖示。通知區域圖示 `tray-ok.ico`、`tray-paused.ico`、`tray-cut.ico` 也會一起打包。
 - 打包前它會先執行 `make_version_info.py`，把產品名稱和 `ransomguard/config.py` 裡的 `VERSION` 寫進 exe 的版本資訊（內容 > 詳細資料）。程式碼簽章需要這些資訊。
 - 接著它會執行 `check_build.py`：如果 exe 裡缺少 `ransomguard` 套件的任何模組，或缺少控制台需要的 Tcl/Tk 檔案，打包就算失敗。PyInstaller 對這種情況只會發出警告，但這樣的 exe 完全無法啟動。v1.7.1 就是這樣：它用 Python 3.14.9 打包，PyInstaller 6.21 無法打包它的 Tcl/Tk 9 檔案；發布版本固定使用 Python 3.14.6。
 
-圖示 `icon.ico` / `icon.png` 由 `make_icon.py` 產生（需要 `pip install pillow`），要改圖示就改這個檔案再執行一次。
+圖示 `icon.ico` / `icon.png` 和通知區域圖示 `tray-*.ico` 由 `make_icon.py` 產生（需要 `pip install pillow`），要改圖示就改這個檔案再執行一次。
 
 ## 測試
 

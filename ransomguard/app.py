@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from . import (backup, canary, config, defender, detection, folders, gui, install, network, processes, response,
-               storage, updates, winapi)
+               storage, tray, updates, winapi)
 from .config import log, tr
 
 
@@ -158,6 +158,10 @@ def run(args, stop=None):
         procmon.start()
     if config.FROZEN and not args.dry_run:
         threading.Thread(target=updates.update_watcher, args=(stop,), daemon=True).start()
+    icon = None
+    if config.IS_WINDOWS and not args.dry_run:  # the notification-area icon (it follows its setting by itself)
+        icon = tray.Tray(lambda: tray.tray_state(handler.paused_until, storage.network_cut(storage.load_state())))
+        icon.start()
     restarts, restarts_since = 0, time.time()
 
     log.info(tr("RansomGuard %s 開始監控%s：%s", "RansomGuard %s started monitoring%s: %s"), config.VERSION,
@@ -214,6 +218,8 @@ def run(args, stop=None):
     finally:
         if procmon is not None:
             procmon.stop()
+        if icon is not None:
+            icon.stop()
         observer.stop()
         observer.join()
         log.info(tr("監控結束", "Monitoring ended"))

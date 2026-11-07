@@ -4,8 +4,8 @@ rem Uses "python" from PATH; set PYTHON to use another one, e.g.  set PYTHON=C:\
 setlocal
 cd /d "%~dp0"
 if not defined PYTHON set "PYTHON=python"
-if not exist icon.ico (
-  echo icon.ico is missing. Create it with:  %PYTHON% make_icon.py
+for %%f in (icon.ico tray-ok.ico tray-paused.ico tray-cut.ico) do if not exist %%f (
+  echo %%f is missing. Create it with:  %PYTHON% make_icon.py
   exit /b 1
 )
 rem product name and version (from ransomguard\config.py) in the exe's Properties > Details
@@ -14,6 +14,7 @@ if errorlevel 1 exit /b 1
 rem paths are relative to --specpath build, hence ..\icon.ico
 "%PYTHON%" -m PyInstaller --noconfirm --onefile --windowed --uac-admin --name RansomGuard ^
   --icon ..\icon.ico --version-file "%~dp0build\version_info.txt" --add-data "..\icon.ico;." ^
+  --add-data "..\tray-ok.ico;." --add-data "..\tray-paused.ico;." --add-data "..\tray-cut.ico;." ^
   --distpath dist --workpath build --specpath build ransom_guard.py
 if errorlevel 1 exit /b 1
 rem PyInstaller only warns when it can't pack the Tcl/Tk data, and the exe then doesn't start (v1.7.1)

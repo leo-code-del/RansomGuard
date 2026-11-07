@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import backup, canary, config, folders, install, network, response, selftest, storage, updates, winapi
+from . import backup, canary, config, folders, install, network, response, selftest, storage, tray, updates, winapi
 from .config import log, tr
 from .winapi import norm
 
@@ -919,18 +919,29 @@ def gui(auto_update=False):
              tr("除了桌面、文件、圖片、下載、影片、音樂，另外加入要監控的資料夾，例如 D 槽、隨身碟或 NAS。",
                 "Besides Desktop, Documents, Pictures, Downloads, Videos and Music, add folders to watch, such as "
                 "another drive, a USB drive or a NAS."))
-        row = tk.Frame(host, bg=C["bg"])
-        row.pack(fill="x", pady=(px(14), 0))
-        w["auto"] = tk.BooleanVar(value=config.auto_update_check())
-        tk.Checkbutton(row, text=tr("自動檢查新版本", "Check for updates automatically"), variable=w["auto"],
-                       command=on_auto_update, font=(w["font"], 11), fg=C["text"], bg=C["bg"],
-                       activebackground=C["bg"], selectcolor=C["card"], highlightthickness=0, bd=0,
-                       cursor="hand2").pack(side="left")
-        tk.Label(host, text=nb(tr("每 6 小時以及開啟控制台時連到 GitHub 檢查新版本；GitHub 會看到這台電腦的 IP 位址。預設關閉。",
-                                  "Asks GitHub for new versions every 6 hours and when the control panel opens; GitHub "
-                                  "sees this computer's IP address. Off by default.")),
-                 font=(w["font"], 9), fg=C["muted"], bg=C["bg"], anchor="w", justify="left",
-                 wraplength=px(470)).pack(fill="x", pady=(px(3), 0))
+        def check(text, value, command, about):
+            """A setting that is on or off, with what it does written under it."""
+            var = tk.BooleanVar(value=value)
+            row = tk.Frame(host, bg=C["bg"])
+            row.pack(fill="x", pady=(px(14), 0))
+            tk.Checkbutton(row, text=text, variable=var, command=command, font=(w["font"], 11), fg=C["text"],
+                           bg=C["bg"], activebackground=C["bg"], selectcolor=C["card"], highlightthickness=0, bd=0,
+                           cursor="hand2").pack(side="left")
+            tk.Label(host, text=nb(about), font=(w["font"], 9), fg=C["muted"], bg=C["bg"], anchor="w",
+                     justify="left", wraplength=px(470)).pack(fill="x", pady=(px(3), 0))
+            return var
+
+        w["auto"] = check(tr("自動檢查新版本", "Check for updates automatically"), config.auto_update_check(),
+                          on_auto_update,
+                          tr("每 6 小時以及開啟控制台時連到 GitHub 檢查新版本；GitHub 會看到這台電腦的 IP 位址。預設關閉。",
+                             "Asks GitHub for new versions every 6 hours and when the control panel opens; GitHub "
+                             "sees this computer's IP address. Off by default."))
+        w["tray"] = check(tr("在通知區域顯示圖示", "Show an icon in the notification area"), tray.tray_enabled(),
+                          lambda: config.set_setting("tray_icon", bool(w["tray"].get())),
+                          tr("工作列右下角的盾牌：綠點已受到保護、橘點偵測暫停中、紅點網路已切斷；點它開啟控制台。"
+                             "圖示不見了，表示背景監控沒在執行。",
+                             "A shield by the clock: a green dot means protected, orange detection paused, red the "
+                             "network cut; click it for the control panel. No icon means monitoring isn't running."))
         item(host, "uninstall", tr("解除安裝", "Uninstall"), on_uninstall,
              tr("移除背景監控、捷徑、誘餌檔、程式資料夾，以及紀錄檔和設定。",
                 "Removes background monitoring, the shortcut, the canary files, the program folder, and the log "

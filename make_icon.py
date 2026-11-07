@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Generate RansomGuard's icon: icon.ico (for the exe) and icon.png (for the README).
+"""Generate RansomGuard's icon: icon.ico (for the exe) and icon.png (for the README), and the notification-area
+icons tray-ok.ico, tray-paused.ico and tray-cut.ico (the shield with a green, orange or red dot).
 
   python make_icon.py
 
@@ -87,12 +88,32 @@ def render(small=False):
     return img
 
 
+# the notification area shows 16 px icons (20, 24, 32 on scaled displays); the dot says the state
+TRAY_SIZES = [16, 20, 24, 32, 40, 48]
+TRAY = {"ok": "#16a34a", "paused": "#d97706", "cut": "#dc2626"}  # the control panel's colors
+
+
+def tray(small, color):
+    """The simplified shield with a colored dot, ringed in white so it shows on dark and light taskbars."""
+    img = small.copy()
+    d = ImageDraw.Draw(img)
+    r, ring = 0.25 * S, 0.06 * S
+    cx, cy = S - r - ring, S - r - ring
+    d.ellipse((cx - r - ring, cy - r - ring, cx + r + ring, cy + r + ring), fill=(255, 255, 255, 255))
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=hexrgb(color) + (255,))
+    return img
+
+
 def main():
     big, small = render(), render(small=True)
     imgs = [(small if n <= SMALL else big).resize((n, n), Image.LANCZOS) for n in SIZES]
     imgs[-1].save("icon.ico", sizes=[(n, n) for n in SIZES], append_images=imgs[:-1])
     imgs[-1].save("icon.png")
-    print("Created icon.ico and icon.png")
+    for state, color in TRAY.items():
+        icon = tray(small, color)
+        sized = [icon.resize((n, n), Image.LANCZOS) for n in TRAY_SIZES]
+        sized[-1].save(f"tray-{state}.ico", sizes=[(n, n) for n in TRAY_SIZES], append_images=sized[:-1])
+    print("Created icon.ico, icon.png and tray-ok.ico, tray-paused.ico, tray-cut.ico")
 
 
 if __name__ == "__main__":
