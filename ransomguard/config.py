@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-VERSION = "1.10.0"  # bump this, add release-notes/v1.10.0.md and push the tag v1.10.0 to publish a release
+VERSION = "1.11.0"  # bump this, add release-notes/v1.11.0.md and push the tag v1.11.0 to publish a release
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"

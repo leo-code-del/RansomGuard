@@ -87,7 +87,7 @@ The buttons are in two groups. Rest the mouse on a button to see what it does. O
 | | Button | What it does |
 | --- | --- | --- |
 | **Protection** | **Install and start monitoring** | Installs background monitoring with the version that is running and starts it, without contacting GitHub |
-| | **Stop monitoring** | Stops it until you click **Install and start monitoring** or restart Windows |
+| | **Pause or stop monitoring** | **Pause file detection** for 30 minutes or 2 hours before bulk work (converting, renaming or encrypting many files on purpose): files that look encrypted, unknown extensions, ransom notes and encrypted copies aren't counted, while canary files and dangerous commands are still watched. It resumes by itself; the status card shows until when. Or **stop monitoring** until you click **Install and start monitoring** or restart Windows |
 | | **Restore network and restart monitoring** | Restores the network after a false alarm. While the network is cut, the control panel shows the detection report (why it triggered, which files looked encrypted, which programs were paused), and so does this button before it asks, so you can tell a false alarm from a real attack |
 | **Tools** | **Self-check** | Makes sure protection really works: background monitoring and the process monitor are running, in the control panel's version; the canary files are intact and hidden; only administrators can change the state folder; no errors since monitoring started; the network and backup state. Then a drill in a temporary folder (simulated encryption of 12 documents and a changed canary file, in test mode: no network cut, no warning) shows how fast detection reacts. Takes about 10 seconds, changes nothing |
 | | **Check for updates** | Asks GitHub whether there is a newer version and tells you; if there is, asks whether to update |
@@ -148,7 +148,7 @@ RansomGuard.exe asks for administrator rights (User Account Control) when it sta
 | --- | --- |
 | Every watched folder | Three hidden canary files (`0000 Scan index.docx`, `Household budget.xlsx`, `ZZ Archive notes.docx`) |
 | `%LOCALAPPDATA%\RansomGuard\` | `guard.log` (at most 4 files of 1 MB, entries older than 30 days removed), `settings.json` (language, automatic update checks, whether you back up with another program, when it last reminded you about a backup) |
-| `C:\ProgramData\RansomGuard\` | `state.json` (what was cut off or paused, and the detection report: why it triggered and up to 50 files that looked encrypted, kept until you restore the network), `canaries.json` (which canary files it created), `watch.json` (folders you added), `monitor_stopped` (when you stopped monitoring). Only administrators can change this folder; your account can read it |
+| `C:\ProgramData\RansomGuard\` | `state.json` (what was cut off or paused, and the detection report: why it triggered and up to 50 files that looked encrypted, kept until you restore the network), `canaries.json` (which canary files it created), `watch.json` (folders you added), `monitor_stopped` (when you stopped monitoring), `detection_paused` (until when file detection is paused). Only administrators can change this folder; your account can read it |
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`, `icon.ico`, `health_check.js` |
 | `%TEMP%` | A `_MEI…` folder the exe unpacks itself into while it runs, removed when it exits. `MpCmdRun.log`, the log Microsoft Defender's scanner keeps of the scans RansomGuard asks for |
 | Desktop | The "RansomGuard" shortcut |
@@ -254,7 +254,7 @@ Keep using antivirus software (such as Microsoft Defender), install Windows upda
 
 ### Things that can go wrong
 
-- **False alarms cut the network.** This happens if you touch a canary file, if a program renames 10 or more files to an unusual extension within 30 seconds, if files named like ransom notes (e.g. `how to recover files.txt`) appear in three folders, or if a file-encryption program (such as AxCrypt) turns 8 or more documents into encrypted files and deletes the originals within 30 seconds.
+- **False alarms cut the network.** This happens if you touch a canary file, if a program renames 10 or more files to an unusual extension within 30 seconds, if files named like ransom notes (e.g. `how to recover files.txt`) appear in three folders, or if a file-encryption program (such as AxCrypt) turns 8 or more documents into encrypted files and deletes the originals within 30 seconds. Before such bulk work, pause file detection with **Pause or stop monitoring**.
 - **Legitimate maintenance is stopped.** Backup software or an administrator running `wbadmin delete backup`, `vssadmin delete shadows` or `wevtutil cl` is treated as ransomware: the command is ended and the network is cut.
 - **Normal programs can be paused by a false alarm.** Editors, browsers and OneDrive write all the time and may be paused (and freeze) until you restore the network from the control panel. If you restore with `restore_network.bat` instead, they stay paused until the computer restarts.
 - **You won't hear about new versions unless you ask.** Automatic update checks are off by default for privacy, so improvements and fixes reach you only if you click **Check for updates** now and then, or turn on **Check for updates automatically**.

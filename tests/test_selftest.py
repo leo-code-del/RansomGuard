@@ -96,6 +96,14 @@ class SelfCheckTests(TempDirTest):
         with mock.patch.object(rg, "state_dir", lambda: self.dir / "missing"), mock.patch.object(rg, "IS_WINDOWS", True):
             self.assertEqual(rg.check_state_permissions()[0], "warn", "not created yet")
 
+    def test_a_pause_is_reported(self):
+        self.assertNotIn("paused", " ".join(t for _, t in rg.check_network_and_backup()))
+        rg.pause_detection(30)
+        self.addCleanup(rg.resume_detection)
+        results = rg.check_network_and_backup()
+        self.assertEqual(results[0][0], "warn")
+        self.assertIn("File detection is paused until", results[0][1])
+
     def test_the_drill_catches_encryption_and_a_canary_change(self):
         record = rg.canary_record()
         results = rg.drill()

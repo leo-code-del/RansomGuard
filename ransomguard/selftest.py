@@ -145,9 +145,18 @@ def check_state_permissions():
 
 
 def check_network_and_backup():
-    out = [(WARN, tr("網路目前被切斷：確認安全後按「恢復網路並重新開啟監控」", "The network is cut off: once you're "
-                     "sure it's safe, click \"Restore network and restart monitoring\""))
-           if storage.network_cut(storage.load_state()) else (OK, tr("網路正常", "The network is normal"))]
+    out = []
+    paused = storage.detection_paused_until()
+    if paused:
+        at = time.strftime("%H:%M", time.localtime(paused))
+        out.append((WARN, tr(f"檔案偵測暫停中，{at} 自動恢復（誘餌檔照常監控）",
+                             f"File detection is paused until {at} (canary files are still watched)")))
+    if storage.network_cut(storage.load_state()):
+        out.append((WARN, tr("網路目前被切斷：確認安全後按「恢復網路並重新開啟監控」",
+                             "The network is cut off: once you're sure it's safe, click \"Restore network and "
+                             "restart monitoring\"")))
+    else:
+        out.append((OK, tr("網路正常", "The network is normal")))
     text, light, note = backup.backup_status()
     out.append((OK if light == "ok" else WARN, tr(f"備份：{text}（{note}）", f"Backup: {text} ({note})")))
     return out

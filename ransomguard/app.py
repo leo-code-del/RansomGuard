@@ -107,6 +107,17 @@ def run(args, stop=None):
         live = {winapi.norm(e.watch.path) for e in observer.emitters if e.is_alive()}
         return [d for d in wanted if winapi.norm(d) not in live and d.is_dir()]  # only those are looked up
 
+    def follow_pause():
+        """Take over a pause of file detection set in the control panel, and say when it starts and ends."""
+        until = storage.detection_paused_until() or 0.0
+        if until and until != handler.paused_until:
+            log.warning(tr("使用者暫停檔案偵測，到 %s 自動恢復（誘餌檔與危險指令照常監控）",
+                           "File detection paused by the user until %s (canary files and dangerous commands are "
+                           "still watched)"), time.strftime("%H:%M", time.localtime(until)))
+        elif not until and handler.paused_until:
+            log.warning(tr("檔案偵測已恢復", "File detection resumed"))
+        handler.paused_until = until
+
     def not_watched_now():
         """Folders whose watcher stopped (a USB drive was unplugged, say): their canary files are left out of the
         periodic check until they are watched again. In their place there may now be another drive, without
@@ -146,6 +157,7 @@ def run(args, stop=None):
         last = pruned = probed = started = time.time()
         backup_checked = 0.0
         while not stop.wait(1):
+            follow_pause()  # every second: the user starts the bulk work right after pausing
             if time.time() - last < config.CHECK_INTERVAL:
                 continue
             last = time.time()

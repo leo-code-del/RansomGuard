@@ -156,6 +156,13 @@ class StatusAndOfflineTests(TempDirTest):
         self.assertEqual(cards("Running", {"triggered_at": "2026-11-02 10:00:00"}), ("ok", "bad"))
         self.assertEqual(cards("Ready", {"firewall": [{"Name": "Domain", "Enabled": "True", "In": "Block",
                                                        "Out": "Allow"}]}), ("warn", "bad"))
+        rg.save_state({})
+        rg.pause_detection(30)
+        self.addCleanup(rg.resume_detection)
+        with mock.patch.object(rg, "task_state", lambda: "Running"):
+            (text, light, note), _ = rg.status_info()
+        self.assertEqual((text, light), ("Detection paused", "paused"))
+        self.assertIn("canary files are still watched", note)
 
     def test_network_turned_back_on_is_cut_again_while_the_warning_is_open(self):
         polls = iter([None, None, None, 0, 0])  # the warning closes after two checks

@@ -321,6 +321,7 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
             self.extchg = deque()
             self.notes = deque()    # (time, normalized folder, the note in it)
             self.last_files = []    # the files counted when it last triggered
+            self.paused_until = 0.0  # file detection paused from the control panel until then (canaries go on)
             self.checked = {}       # path -> ((size, mtime), monotonic time it was last checked)
             self.lock = threading.Lock()
             self.triggered_at = None
@@ -351,6 +352,8 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None):
 
         def _count(self, q, key, threshold, label, example):
             now = time.time()
+            if now < self.paused_until:  # paused: bulk work the user announced (canary files are checked as always)
+                return
             with self.lock:
                 q.append((now, norm(key), example))
                 while q and now - q[0][0] > config.WINDOW_SEC:

@@ -276,6 +276,24 @@ class HandlerTests(TempDirTest):
         self.assertEqual(len(self.fired), 1)
         self.assertEqual(self.h.last_files, paths, "the files as they are named, most recent last")
 
+    def test_paused_file_detection_still_watches_canaries(self):
+        self.h.paused_until = time.time() + 60
+        for i in range(rg.BROKEN_THRESHOLD * 2):  # bulk work while paused: not counted
+            self.h.on_any_event(FileModifiedEvent(self.file(f"converted{i}.docx", random_bytes())))
+            self.h.on_any_event(FileMovedEvent(f"{self.dir}\\r{i}.docx", f"{self.dir}\\r{i}.docx.locked"))
+        self.assertEqual(self.fired, [])
+        self.assertEqual((len(self.h.broken), len(self.h.extchg)), (0, 0))
+        overwrite(self.canaries[0], random_bytes())  # but a canary file touched triggers at once
+        self.h.on_any_event(FileModifiedEvent(str(self.canaries[0])))
+        self.assertEqual(len(self.fired), 1)
+        self.assertIn("Canary", self.fired[0])
+
+    def test_counting_starts_again_when_the_pause_ends(self):
+        self.h.paused_until = time.time() - 1  # ended
+        for i in range(rg.BROKEN_THRESHOLD):
+            self.h.on_any_event(FileModifiedEvent(self.file(f"after{i}.docx", random_bytes())))
+        self.assertEqual(len(self.fired), 1)
+
     def test_same_file_many_events_counts_once(self):
         p = self.file("one.docx", random_bytes())
         for _ in range(50):

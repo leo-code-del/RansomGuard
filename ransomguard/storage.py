@@ -109,7 +109,7 @@ def state_dir() -> Path:
 
 
 _state_secured = False
-STATE_FILES = ("state.json", "canaries.json", "watch.json", "monitor_stopped")
+STATE_FILES = ("state.json", "canaries.json", "watch.json", "monitor_stopped", "detection_paused")
 
 
 def _is_link(p: Path) -> bool:
@@ -236,6 +236,44 @@ def save_state(st: dict):
     d = state_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / "state.json").write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# The control panel can pause file detection for a while (bulk work: converting, renaming or encrypting many files
+# on purpose). Only what such work sets off is paused - files that look encrypted, unknown extensions, ransom
+# notes, encrypted copies; canary files and dangerous commands are watched as always. The end time lives in the
+# administrators-only state folder, so a program running as the user can't pause detection.
+PAUSE_MAX_MINUTES = 120
+
+
+def _pause_file() -> Path:
+    return state_dir() / "detection_paused"
+
+
+def pause_detection(minutes: int) -> float:
+    """Pause file detection for `minutes` (at most PAUSE_MAX_MINUTES); returns when it resumes."""
+    until = time.time() + max(1, min(int(minutes), PAUSE_MAX_MINUTES)) * 60
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    _pause_file().write_text(str(until), encoding="utf-8")
+    return until
+
+
+def resume_detection():
+    try:
+        _pause_file().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def detection_paused_until():
+    """When paused file detection resumes (seconds since the epoch), or None if it isn't paused. A damaged file, a
+    time already past or one further away than PAUSE_MAX_MINUTES (the clock was changed) counts as not paused."""
+    try:
+        until = float(_pause_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    now = time.time()
+    return until if now < until <= now + PAUSE_MAX_MINUTES * 60 + 60 else None
 
 
 def network_cut(st: dict) -> bool:

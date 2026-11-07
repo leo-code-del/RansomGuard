@@ -56,7 +56,7 @@ MONITOR_RESTART_MINUTES = 5
 
 
 def stop_monitor_until_restart():
-    """The control panel's "Stop monitoring"."""
+    """The control panel's "Stop monitoring until restart" (under "Pause or stop monitoring")."""
     d = storage.state_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / "monitor_stopped").write_text(str(winapi.boot_time()), encoding="utf-8")

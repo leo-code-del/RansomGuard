@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from . import backup, canary, config, folders, install, network, response, selftest, storage, updates, winapi
@@ -13,7 +14,7 @@ from .winapi import norm
 
 def status_info():
     """The control panel's two status cards: ((text, light, note), (text, light, note));
-    light is ok / warn / bad / off."""
+    light is ok / paused (running, file detection paused) / warn / bad / off."""
     s = install.task_state()
     unprotected = tr("目前沒有勒索病毒防護", "No ransomware protection right now")
     mon = {"Running": (tr("執行中", "Running"), "ok",
@@ -23,6 +24,11 @@ def status_info():
            "": (tr("尚未安裝", "Not installed"), "off",
                 tr("按「安裝並開始監控」", "Click \"Install and start monitoring\""))
            }.get(s, (s, "warn", ""))
+    paused = storage.detection_paused_until()
+    if s == "Running" and paused:
+        at = time.strftime("%H:%M", time.localtime(paused))
+        mon = (tr("偵測暫停中", "Detection paused"), "paused",
+               tr(f"{at} 自動恢復；誘餌檔照常監控", f"Resumes at {at}; canary files are still watched"))
     st = storage.load_state()
     cut = tr("已切斷", "Cut off")
     if st.get("triggered_at"):
@@ -106,7 +112,7 @@ def gui(auto_update=False):
 
     C = {"bg": "#f3f5f9", "card": "#ffffff", "border": "#dfe3eb", "header": "#1e293b",
          "text": "#1f2937", "muted": "#6b7280",
-         "ok": "#16a34a", "warn": "#d97706", "bad": "#dc2626", "off": "#9ca3af"}
+         "ok": "#16a34a", "paused": "#d97706", "warn": "#d97706", "bad": "#dc2626", "off": "#9ca3af"}
     # button styles: (background, hover background, text, disabled text)
     STYLES = {"primary": ("#2563eb", "#1d4ed8", "#ffffff", "#bfd0f7"),
               "success": ("#16a34a", "#15803d", "#ffffff", "#bde5cb"),
@@ -183,7 +189,7 @@ def gui(auto_update=False):
             detail.config(text=note or " ")
         # color only what needs the user now: restoring a cut network, starting monitoring that isn't running,
         # a newer version; when everything is fine no button stands out
-        cut, running = info[1][1] == "bad", info[0][1] == "ok"
+        cut, running = info[1][1] == "bad", info[0][1] in ("ok", "paused")
         style(w["install"], "primary" if not cut and not running else "secondary")
         style(w["update"], "primary" if w.get("new") and not cut else "secondary")
         style(w["restore"], "success" if cut else "secondary")
@@ -301,7 +307,7 @@ def gui(auto_update=False):
             return
         run_bg(network.restore_network)
 
-    def on_stop():
+    def stop_monitoring():
         if messagebox.askyesno(tr("停止監控", "Stop monitoring"),
                                tr("停止後電腦就沒有勒索病毒防護，直到你按「安裝並開始監控」或重新開機。\n確定要停止嗎？",
                                   "This computer will have no ransomware protection until you click \"Install "
@@ -309,6 +315,65 @@ def gui(auto_update=False):
             run_bg(lambda rep: (install.stop_monitor_until_restart(),
                                 rep(tr("監控已停止，重新開機後會自動再啟動。",
                                        "Monitoring stopped. It starts again by itself when Windows restarts."))))
+
+    def on_stop():
+        """Dialog: pause file detection for a while (bulk work), resume it, or stop monitoring until a restart."""
+        title = tr("暫停／停止監控", "Pause or stop monitoring")
+        F = w["font"]
+        dlg = tk.Toplevel(root)
+        dlg.title(title)
+        dlg.configure(bg=C["bg"])
+        dlg.resizable(False, False)
+        dlg.transient(root)
+        pad = tk.Frame(dlg, bg=C["bg"])
+        pad.pack(fill="both", padx=px(20), pady=px(16))
+
+        def label(text, bold=False, muted=False, gap=(0, 0)):
+            tk.Label(pad, text=text, font=(F, 10, "bold") if bold else (F, 9), fg=C["muted"] if muted else C["text"],
+                     bg=C["bg"], justify="left", wraplength=px(420)).pack(anchor="w", pady=gap)
+
+        def choose(fn):
+            def run():
+                dlg.destroy()
+                fn()
+            return run
+
+        def pause(minutes):
+            until = storage.pause_detection(minutes)
+            at = time.strftime("%H:%M", time.localtime(until))
+            write(tr(f"檔案偵測已暫停，{at} 自動恢復。誘餌檔與危險指令照常監控。",
+                     f"File detection is paused until {at}. Canary files and dangerous commands are still watched."))
+            refresh()
+
+        def resume():
+            storage.resume_detection()
+            write(tr("檔案偵測已恢復。", "File detection resumed."))
+            refresh()
+
+        def option(text, cmd, name="secondary"):
+            make_button(pad, text, cmd, name, track=False)[0].pack(fill="x", pady=(0, px(6)))
+
+        paused = storage.detection_paused_until()
+        label(tr("暫停檔案偵測", "Pause file detection"), bold=True)
+        label(tr("要大量轉檔、改名或用加密軟體加密檔案時使用。暫停期間不計算「檔案像被加密」「陌生副檔名」「勒索信」"
+                 "「加密副本」；誘餌檔和危險指令照常監控。時間到自動恢復。",
+                 "For bulk work such as converting, renaming or encrypting many files on purpose. While paused, files "
+                 "that look encrypted, unknown extensions, ransom notes and encrypted copies aren't counted; canary "
+                 "files and dangerous commands are still watched. It resumes by itself."),
+              muted=True, gap=(0, px(8)))
+        if paused:
+            at = time.strftime("%H:%M", time.localtime(paused))
+            option(tr(f"立即恢復偵測（原本 {at} 恢復）", f"Resume detection now (due at {at})"), choose(resume), "primary")
+        option(tr("暫停 30 分鐘", "Pause for 30 minutes"), choose(lambda: pause(30)), "secondary" if paused else "primary")
+        option(tr("暫停 2 小時", "Pause for 2 hours"), choose(lambda: pause(120)))
+        label(tr("停止監控", "Stop monitoring"), bold=True, gap=(px(8), 0))
+        label(tr("完全沒有防護，直到你按「安裝並開始監控」或重新開機。", "No protection at all until you click \"Install and "
+                 "start monitoring\" or restart Windows."), muted=True, gap=(0, px(8)))
+        option(tr("停止監控到重新開機…", "Stop monitoring until restart…"), choose(stop_monitoring), "danger")
+        make_button(pad, tr("取消", "Cancel"), dlg.destroy, "secondary", track=False)[0].pack(anchor="e", pady=(px(6), 0))
+        dlg.update_idletasks()
+        dlg.geometry(f"+{root.winfo_rootx() + px(30)}+{root.winfo_rooty() + px(60)}")
+        dlg.grab_set()
 
     def on_uninstall():
         title = tr("解除安裝", "Uninstall")
@@ -686,9 +751,10 @@ def gui(auto_update=False):
               lambda: run_bg(lambda rep: install.install(rep, update=False)),
               tr("用目前這個版本安裝並開始背景監控，不會連網。",
                  "Installs background monitoring with this version and starts it. Doesn't connect to the internet.")),
-             ("stop", tr("停止監控", "Stop monitoring"), on_stop,
-              tr("暫時停止背景監控，重新開機後會自動再啟動。",
-                 "Stops background monitoring for now; it starts again when Windows restarts."))],
+             ("stop", tr("暫停／停止監控", "Pause or stop monitoring"), on_stop,
+              tr("大量整理檔案前暫停檔案偵測 30 分鐘或 2 小時（誘餌檔照常監控），或停止監控到重新開機。",
+                 "Pauses file detection for 30 minutes or 2 hours before bulk work (canary files are still watched), "
+                 "or stops monitoring until Windows restarts."))],
             [("restore", tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore,
               tr("誤判時使用：重新啟用網路、恢復 Defender 確認沒問題的被暫停程式，並重新開始監控。",
                  "After a false alarm: turns the network back on, resumes paused programs Defender finds clean "

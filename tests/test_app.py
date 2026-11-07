@@ -187,6 +187,24 @@ class MonitorLoopTests(TempDirTest):
         stop.set()
         rg.run(argparse.Namespace(watch=[str(self.watch)], dry_run=False), stop)
 
+    def test_a_pause_set_in_the_control_panel_applies_within_seconds(self):
+        self.start()
+        with self.assertLogs(rg.log, "WARNING") as logged:
+            rg.pause_detection(30)  # what the control panel does
+            self.addCleanup(rg.resume_detection)
+            time.sleep(1.5)
+            for i in range(rg.BROKEN_THRESHOLD + 4):  # bulk work right after pausing
+                (self.watch / f"converted{i}.jpg").write_bytes(random_bytes())
+            time.sleep(2)
+            self.assertEqual(self.triggered, [], "counted while paused")
+            overwrite(self.watch / rg.CANARY_NAMES[0], b"encrypted")  # canary files are still watched
+            self.wait_for(lambda: self.triggered)
+            self.assertIn("Canary", self.triggered[0][0])
+            rg.resume_detection()
+            time.sleep(1.5)
+        self.assertTrue(any("paused by the user until" in m for m in logged.output), logged.output)
+        self.assertTrue(any("File detection resumed" in m for m in logged.output), logged.output)
+
     def test_a_stop_by_the_user_holds_until_windows_restarts(self):
         with mock.patch.object(rg, "stop_monitor", lambda: None), mock.patch.object(rg, "boot_time", lambda: 1000.0):
             rg.stop_monitor_until_restart()

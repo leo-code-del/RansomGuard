@@ -114,6 +114,23 @@ class LogPrivacyTests(TempDirTest):
 
 # ---------------------------------------------------------------- state only administrators can change
 class StateSecurityTests(TempDirTest):
+    def test_pausing_file_detection(self):
+        self.patch("app_dir", lambda: self.dir)
+        self.assertIsNone(rg.detection_paused_until())
+        until = rg.pause_detection(30)
+        self.assertAlmostEqual(until, time.time() + 1800, delta=5)
+        self.assertEqual(rg.detection_paused_until(), until)
+        self.assertIn("detection_paused", rg.STATE_FILES, "kept when the state folder is secured")
+        self.assertAlmostEqual(rg.pause_detection(10_000), time.time() + rg.PAUSE_MAX_MINUTES * 60, delta=5,
+                               msg="capped")
+        rg.resume_detection()
+        self.assertIsNone(rg.detection_paused_until())
+        rg.resume_detection()  # resuming twice is fine
+        pause_file = rg.state_dir() / "detection_paused"
+        for bad in ("yesterday", "", "nan", "inf", str(time.time() - 60), str(time.time() + 86400)):
+            pause_file.write_text(bad, encoding="utf-8")  # damaged, past or too far away (clock changed): not paused
+            self.assertIsNone(rg.detection_paused_until(), bad)
+
     def test_a_tampered_state_file_cannot_steer_the_restore(self):
         tampered = {
             "triggered_at": "2026-11-04 10:00:00",
