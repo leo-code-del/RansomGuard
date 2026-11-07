@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 
-VERSION = "1.14.0"  # bump this, add release-notes/v1.14.0.md and push the tag v1.14.0 to publish a release
+VERSION = "1.15.0"  # bump this, add release-notes/v1.15.0.md and push the tag v1.15.0 to publish a release
 IS_WINDOWS = os.name == "nt"
 FROZEN = bool(getattr(sys, "frozen", False))  # running as an .exe packaged by PyInstaller
 TASK_NAME = "RansomGuard"
@@ -30,7 +30,8 @@ NOTE_DIR_THRESHOLD = 3       # trigger when ransom notes appear in this many fol
 PROCESS_MONITOR = True       # watch new processes and stop destructive commands (deleting restore points...)
 CHECK_INTERVAL = 15          # seconds between periodic checks of canary files and monitor health
 HIBERNATE_ON_TRIGGER = False  # True: hibernate right after cutting the network so encryption stops
-PAUSE_ON_TRIGGER = True      # pause the programs writing the most data, and the one behind a destructive command
+PAUSE_ON_TRIGGER = True      # pause the programs that wrote the files (or write the most), and the one behind a command
+FILE_TRACE = True           # follow which program writes which file (kernel file events), to know whom to pause
 DEFENDER_SCAN_ON_TRIGGER = True  # have Microsoft Defender scan the paused programs and run a quick scan
 DEFENDER_SCAN_DOWNLOADS = True   # have Defender scan new programs, scripts and archives in Downloads / on the Desktop
 

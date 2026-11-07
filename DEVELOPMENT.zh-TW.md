@@ -35,6 +35,7 @@ python ransom_guard.py --gui
 | `canary` | 隱藏的誘餌檔 |
 | `detection` | 分辨加密和日常操作；檔案事件處理 |
 | `processes` | 危險指令與程序監控 |
+| `filetrace` | 從 Windows 核心的檔案事件（ETW）得知哪個程式寫了哪個檔案，讓觸發時暫停正確的程式 |
 | `response` | 觸發時的處理：暫停程式、全螢幕警告 |
 | `defender` | Microsoft Defender 掃描與下載掃描 |
 | `network` | 切斷與恢復網路 |
@@ -74,7 +75,8 @@ python -m unittest discover -s tests -v
 
 - 使用者資料夾、程式資料夾和安裝資料夾都會被導向暫存的沙盒；
 - 測試如果沒有先換掉操作網路卡、防火牆或排程工作的 PowerShell 指令、`ipconfig` / `netsh` / 關機、網際網路或全螢幕警告就碰到它們，會直接失敗；
-- 測試只能暫停自己開出來的程序。
+- 測試只能暫停自己開出來的程序；
+- 不會啟動核心檔案追蹤（和已安裝的監控同名的追蹤會把它結束掉）；用自己的名稱啟動真正追蹤的那個測試，只在有系統管理員權限時執行。
 
 有些測試會實際使用唯讀的 Windows 功能：透過 WMI 監看新程序、用 Defender 掃描暫存檔，以及讀取排程工作。
 

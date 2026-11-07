@@ -8,6 +8,7 @@ Modules, roughly in the order a trigger goes through them:
   canary     hidden decoy files
   detection  telling encryption from everyday work; the file-event handler
   processes  destructive commands and the process monitor
+  filetrace  which program writes which file (the kernel's file events)
   response   pausing programs and the full-screen warning
   defender   Microsoft Defender scans and the download scanner
   network    cutting the network off and restoring it

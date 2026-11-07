@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import os
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -508,6 +509,23 @@ class HandlerTests(TempDirTest):
         self.assertEqual(rg.canary_record(), [])
 
 
+class SharedReadTests(TempDirTest):
+    def test_reading_a_file_never_stops_others_renaming_or_deleting_it(self):
+        # a program saving a file writes a new one and renames it over the old: it must not fail because this
+        # program is reading it at that moment
+        p = self.dir / "report.docx"
+        p.write_bytes(real_zip(30000))
+        with rg.open_shared(p) as f:
+            self.assertEqual(f.read(4), b"PK\x03\x04")
+            p.rename(self.dir / "report.docx.old")
+            (self.dir / "report.docx.old").unlink()
+        self.assertFalse((self.dir / "report.docx.old").exists())
+
+    def test_a_missing_file_raises_as_open_does(self):
+        with self.assertRaises(FileNotFoundError):
+            rg.read_shared(self.dir / "gone.txt")
+
+
 # ---------------------------------------------------------------- end to end with a real file watcher
 class EndToEndTests(TempDirTest):
     def watch(self):
@@ -540,6 +558,35 @@ class EndToEndTests(TempDirTest):
             p.rename(work / f"doc{i}.docx.locked")
         self.wait_for(lambda: self.fired)
         self.assertTrue(self.fired, "simulated ransomware was not detected")
+
+    def test_ransomware_that_never_pauses_is_caught_while_it_works(self):
+        # watchdog 7 handed events over only after a quiet second: something writing all the time (here another
+        # program's file, rewritten every 0.1 s) hid everything, and ransomware that never paused was seen only
+        # when it had encrypted every file
+        self.watch()
+        work = self.dir / "work"
+        work.mkdir()
+        files = [work / f"report{i:03}.txt" for i in range(120)]
+        for p in files:
+            p.write_text("quarterly figures and notes\n" * 1500)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def busy():
+            while not stop.wait(0.1):
+                (self.dir / "state.bin").write_bytes(random_bytes(50000))
+        threading.Thread(target=busy, daemon=True).start()
+        time.sleep(1)
+        done = None
+        for i, p in enumerate(files):
+            with open(p, "r+b") as f:
+                f.write(random_bytes(30000))
+            if self.fired:
+                done = i + 1
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(done, "not detected while it encrypted")
+        self.assertLess(done, 40, f"detected only after {done} files")
 
     def test_deleting_a_canary_is_caught(self):
         canaries = self.watch()

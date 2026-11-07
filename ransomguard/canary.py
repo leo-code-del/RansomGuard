@@ -191,19 +191,25 @@ def plant_canaries(dirs, upgrade=False):
     return paths
 
 
-def check_canaries(canaries):
-    """Describe the first canary file that is not intact; None if all are fine."""
+def changed_canary(canaries):
+    """(path, what happened to it) of the first canary file that is not intact; None if all are fine."""
     for p in canaries:
         try:
-            if not canary_intact(p, Path(p).read_bytes()):
-                return tr(f"誘餌檔內容被修改：{p}", f"Canary file was modified: {p}")
+            if not canary_intact(p, winapi.read_shared(p)):
+                return p, tr(f"誘餌檔內容被修改：{p}", f"Canary file was modified: {p}")
         except FileNotFoundError:
             if not Path(p).parent.is_dir():
                 continue  # the whole folder is gone (e.g. OneDrive was unlinked), not an attack on the file
-            return tr(f"誘餌檔不見了：{p}", f"Canary file is missing: {p}")
+            return p, tr(f"誘餌檔不見了：{p}", f"Canary file is missing: {p}")
         except OSError:
             pass  # temporarily locked (e.g. antivirus is scanning); check again next time
     return None
+
+
+def check_canaries(canaries):
+    """Describe the first canary file that is not intact; None if all are fine."""
+    found = changed_canary(canaries)
+    return found[1] if found else None
 
 
 def remove_canaries(only_in=None):

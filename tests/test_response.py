@@ -70,12 +70,73 @@ class PauseTests(TempDirTest):
         self.assertEqual(self.calls, [])
         self.assertEqual([(p["pid"], p["paused"]) for p in found], [(2, False)])
 
+    def fake_trace(self, rows):
+        """filetrace.current names `rows` [(pid, files)] as the programs that wrote the evidence."""
+        class Trace:
+            asked = None
+
+            def culprits(self, evidence):
+                self.asked = list(evidence)
+                return rows
+        trace = Trace()
+        p = mock.patch.object(rg.filetrace, "current", trace)
+        p.start()
+        self.addCleanup(p.stop)
+        return trace
+
+    def test_the_programs_that_wrote_the_files_are_paused_not_the_heaviest_writers(self):
+        me = os.getpid()
+        self.patch("process_list", lambda: [(10, 1, "evil.exe"), (11, 1, "svchost.exe"), (12, me, "powershell.exe"),
+                                            (13, 1, "sync.exe")])
+        paths = {10: r"C:\Users\u\evil.exe", 11: rf"{WIN}\System32\svchost.exe", 13: r"C:\Program Files\S\sync.exe"}
+        self.patch("process_path", lambda pid: paths.get(pid, ""))
+        self.calls = []
+        self.patch("set_paused", lambda pid, paused: self.calls.append((pid, paused)) or True)
+        self.patch("write_counters", support.forbidden("write counters: the trace knows who wrote the files"))
+        # 11: Windows itself; 12: started by this program; 99: exited
+        trace = self.fake_trace([(10, 8), (11, 5), (12, 4), (99, 3), (13, 3)])
+        found = rg.pause_writers(dry_run=False, evidence=[r"C:\d\a.docx"])
+        self.assertEqual([p["pid"] for p in found], [10, 13])
+        self.assertEqual(self.calls, [(10, True), (13, True)])
+        self.assertEqual(trace.asked, [r"C:\d\a.docx"])
+        self.calls.clear()
+        found = rg.pause_writers(dry_run=True, evidence=[r"C:\d\a.docx"])  # test mode: only named
+        self.assertEqual([(p["pid"], p["paused"]) for p in found], [(10, False), (13, False)])
+        self.assertEqual(self.calls, [])
+
+    def test_the_heaviest_writers_when_the_trace_names_nobody(self):
+        self.fake_writers([(2, "evil.exe")], {2: r"C:\Users\u\evil.exe"})
+        self.patch("process_list", lambda: [(2, 1, "evil.exe")])
+        self.fake_trace([])  # e.g. writing through a memory-mapped file, which looks like Windows itself
+        self.assertEqual([p["pid"] for p in rg.pause_writers(dry_run=False, evidence=[r"C:\d\a.docx"])], [2])
+
+    def test_the_network_is_cut_while_the_program_is_being_paused(self):
+        cutting, asked, alerts = threading.Event(), [], []
+        self.patch("app_dir", lambda: self.dir)
+        self.patch("IS_WINDOWS", True)
+
+        def pause(dry_run, evidence=()):
+            asked.append((list(evidence), cutting.wait(5)))  # the cut has begun before pausing is done
+            return []
+        self.patch("pause_writers", pause)
+        self.patch("disconnect_network", lambda: cutting.set() or True)
+        self.patch("fullscreen_alert", lambda reason, status, paused=(), files=(): alerts.append(status))
+        self.patch("ask_defender", lambda paths: None)
+        self.addCleanup(rg.init_lang, "en")
+        rg.respond("test", dry_run=False, files=[r"C:\d\a.docx"], touched=[r"C:\d\canary.docx"])
+        self.assertEqual(asked, [([r"C:\d\canary.docx", r"C:\d\a.docx"], True)])
+        self.assertEqual(alerts, ["cut"])
+        # test mode never cuts
+        self.patch("disconnect_network", support.forbidden("network cut in test mode"))
+        rg.respond("test", dry_run=True, files=[r"C:\d\a.docx"])
+        self.assertEqual(alerts, ["cut", "test"])
+
     def test_trigger_pauses_saves_and_asks_defender(self):
         evil = {"pid": 7, "name": "evil.exe", "path": r"C:\x\evil.exe", "paused": True, "result": "paused"}
         alerts, asked, done = [], [], threading.Event()
         self.patch("app_dir", lambda: self.dir)
         self.patch("IS_WINDOWS", True)
-        self.patch("pause_writers", lambda dry_run: [evil])
+        self.patch("pause_writers", lambda dry_run, evidence=(): [evil])
         self.patch("disconnect_network", lambda: True)
         self.patch("fullscreen_alert", lambda reason, status, paused=(), files=(): alerts.append((status, paused, files)))
         self.patch("ask_defender", lambda paths: (asked.append(paths), done.set()))
@@ -95,8 +156,8 @@ class PauseTests(TempDirTest):
         cut = []
         self.patch("app_dir", lambda: self.dir)
         self.patch("IS_WINDOWS", True)
-        self.patch("pause_writers", lambda dry_run: [{"pid": 7, "name": "e.exe", "path": "", "paused": True,
-                                                      "result": "paused"}])
+        evil = {"pid": 7, "name": "e.exe", "path": "", "paused": True, "result": "paused"}
+        self.patch("pause_writers", lambda dry_run, evidence=(): [evil])
         self.patch("save_state", mock.Mock(side_effect=OSError("disk full")))
         self.patch("disconnect_network", lambda: cut.append(1) or True)
         self.patch("fullscreen_alert", lambda reason, status, paused=(), files=(): None)
@@ -171,7 +232,7 @@ class PauseTests(TempDirTest):
         alerts = []
         self.patch("app_dir", lambda: self.dir)
         self.patch("IS_WINDOWS", True)
-        self.patch("pause_writers", lambda dry_run: [dict(evil), {**evil, "pid": 41, "name": "other.exe"}])
+        self.patch("pause_writers", lambda dry_run, evidence=(): [dict(evil), {**evil, "pid": 41, "name": "other.exe"}])
         self.patch("disconnect_network", lambda: True)
         self.patch("fullscreen_alert", lambda reason, status, paused=(), files=(): alerts.append(paused))
         self.patch("ask_defender", lambda paths: None)

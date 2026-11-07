@@ -119,13 +119,38 @@ def entropy(data: bytes) -> float:
     return -sum(c / n * math.log2(c / n) for c in Counter(data).values())
 
 
+def fix_watchdog():
+    """watchdog 7 reads a folder's changes in a thread of its own, but hands them over only once nothing has changed
+    for a whole second (the observer's timeout). A program that never stops writing, as ransomware encrypting file
+    after file, was then seen only when it was done: 200 of 200 files encrypted before a trigger. Hand over what has
+    come in as soon as there is something. Call it before watching; calling it again does nothing."""
+    try:
+        from watchdog.observers import winapi as wd
+    except ImportError:  # not Windows
+        return
+    reader = getattr(wd, "DirectoryChangeReader", None)
+    if reader is None or getattr(reader.get_events, "rg_fixed", False):
+        return
+    take = reader.get_events
+
+    def get_events(self, timeout):
+        q = self._buf_queue
+        with q.not_empty:  # wait for the first batch (up to timeout) without taking it...
+            if not q._qsize():
+                q.not_empty.wait(timeout)
+        return take(self, 0)  # ...then take all that has come in, without waiting for a quiet second
+
+    get_events.rg_fixed = True
+    reader.get_events = get_events
+
+
 def periodic_check(handler, canaries):
     """Check canary files periodically: file events can be missed (full buffer, file locked while read)."""
     if handler.triggered_at is not None:
         return
-    reason = canary.check_canaries(canaries)
-    if reason:
-        handler.fire(reason + tr("（定期檢查發現）", " (found by periodic check)"))
+    found = canary.changed_canary(canaries)
+    if found:
+        handler.fire(found[1] + tr("（定期檢查發現）", " (found by periodic check)"), (str(found[0]),))
 
 
 # Cloud files (OneDrive etc.) not downloaded yet: reading one starts a download, so leave them alone
@@ -172,7 +197,7 @@ def broken_reason(path: str, st=None):
         if getattr(st, "st_file_attributes", 0) & _CLOUD_ATTRS:
             return None
         size = st.st_size
-        with open(path, "rb") as f:
+        with winapi.open_shared(path) as f:
             data, tail = f.read(SAMPLE_SIZE), b""
             if ext in TEXT_EXTS and size > SAMPLE_SIZE:  # its end too: encryption may leave the start alone
                 f.seek(size - TAIL_SIZE)
@@ -232,7 +257,7 @@ def damaged_end(path: str):
     files). Call it only for a file nobody is writing: see SETTLE_SEC."""
     destroyed = tr("檔案結尾的結構被破壞", "file structure at the end destroyed")
     try:
-        with open(path, "rb") as f:
+        with winapi.open_shared(path) as f:
             head = f.read(1024)
             size = f.seek(0, os.SEEK_END)
             f.seek(max(0, size - TAIL_SIZE))
@@ -269,7 +294,7 @@ def looks_encrypted(path: str, st=None) -> bool:
         st = st or os.stat(path)
         if getattr(st, "st_file_attributes", 0) & _CLOUD_ATTRS or st.st_size < 1024:
             return False
-        with open(path, "rb") as f:
+        with winapi.open_shared(path) as f:
             data = f.read(SAMPLE_SIZE)
     except OSError:
         return False
@@ -314,6 +339,7 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None, excluded=()):
     """on_new_file(path) is told about every file that is created or renamed (for DownloadScanner). Nothing in the
     `excluded` folders is counted (canary files and new downloads are looked at as always)."""
     from watchdog.events import FileSystemEventHandler
+    fix_watchdog()
 
     class Guard(FileSystemEventHandler):
         def __init__(self):
@@ -323,6 +349,7 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None, excluded=()):
             self.extchg = deque()
             self.notes = deque()    # (time, normalized folder, the note in it)
             self.last_files = []    # the files counted when it last triggered
+            self.last_touched = []  # the canary files that made it trigger (for finding who changed them)
             self.paused_until = 0.0  # file detection paused from the control panel until then (canaries go on)
             self.checked = {}       # path -> ((size, mtime), monotonic time it was last checked)
             self.lock = threading.Lock()
@@ -334,7 +361,7 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None, excluded=()):
             self.deleted = {}       # folder -> deque of (time, None): files people keep that were deleted there
             self.unknown = {}       # folder -> deque of (time, path): new files of a type this program doesn't know
 
-        def fire(self, reason):
+        def fire(self, reason, touched=()):
             with self.lock:
                 now = time.time()
                 if self.triggered_at is not None:
@@ -343,10 +370,14 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None, excluded=()):
                         return
                 self.triggered_at = now
                 # the evidence, for the warning and the detection report: the files counted, most recent last
-                files = []
+                files, seen = [], set()
                 for q in (self.broken, self.extchg, self.notes):
-                    files += [item[2] for item in q if item[2] not in files]
+                    for item in q:  # a file judged twice (created, then written) is listed once
+                        if norm(item[2]) not in seen:
+                            seen.add(norm(item[2]))
+                            files.append(item[2])
                 self.last_files = files[-50:]
+                self.last_touched = [p for p in touched if p]
                 self.broken.clear()
                 self.extchg.clear()
                 self.notes.clear()
@@ -385,19 +416,19 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None, excluded=()):
             # 1. Canary files
             if norm(src) in self.canaries:
                 if t == "deleted":
-                    return self.fire(tr(f"誘餌檔被刪除：{src}", f"Canary file was deleted: {src}"))
+                    return self.fire(tr(f"誘餌檔被刪除：{src}", f"Canary file was deleted: {src}"), (src,))
                 if t == "moved":
                     return self.fire(tr(f"誘餌檔被改名或移動：{src} → {dest}",
-                                        f"Canary file was renamed or moved: {src} → {dest}"))
+                                        f"Canary file was renamed or moved: {src} → {dest}"), (src, dest))
                 try:
-                    if not canary.canary_intact(src, Path(src).read_bytes()):
-                        return self.fire(tr(f"誘餌檔內容被修改：{src}", f"Canary file was modified: {src}"))
+                    if not canary.canary_intact(src, winapi.read_shared(src)):
+                        return self.fire(tr(f"誘餌檔內容被修改：{src}", f"Canary file was modified: {src}"), (src,))
                 except OSError:
                     pass
                 return
             if dest and norm(dest) in self.canaries:
                 return self.fire(tr(f"有檔案覆蓋了誘餌檔：{src} → {dest}",
-                                    f"A file overwrote a canary file: {src} → {dest}"))
+                                    f"A file overwrote a canary file: {src} → {dest}"), (src, dest))
             path = dest if t == "moved" else src  # the file as it is now
             if on_new_file and t in ("created", "moved"):
                 on_new_file(path)

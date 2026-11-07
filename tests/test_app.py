@@ -4,7 +4,6 @@ import os
 import threading
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
 import watchdog.observers
@@ -21,6 +20,7 @@ class MonitorLoopTests(TempDirTest):
         self.watch = self.dir / "watch"
         self.watch.mkdir()
         self.triggered = []
+        self.touched = []
         self.restart_trigger_kept = []
         StubProcessMonitor.instances = []
         for name, value in (("app_dir", lambda: self.dir), ("IS_WINDOWS", True), ("FROZEN", False),
@@ -29,7 +29,8 @@ class MonitorLoopTests(TempDirTest):
                             ("ProcessMonitor", StubProcessMonitor), ("DEFENDER_SCAN_DOWNLOADS", False),
                             ("keep_restart_trigger", lambda: self.restart_trigger_kept.append(1)),
                             ("CHECK_INTERVAL", 0),
-                            ("respond", lambda reason, dry_run, files=(): self.triggered.append((reason, dry_run, files)))):
+                            ("respond", lambda reason, dry_run, files=(), touched=(): (
+                                self.triggered.append((reason, dry_run, files)) or self.touched.append(touched)))):
             p = mock.patch.object(rg, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -58,6 +59,8 @@ class MonitorLoopTests(TempDirTest):
         time.sleep(2)
         self.assertEqual(len(self.triggered), 1)
         self.assertIn("Canary file", self.triggered[0][0])
+        # the canary file goes to the response too, which pauses the program that wrote it
+        self.assertEqual([rg.norm(p) for p in self.touched[0]], [rg.norm(canary)])
         # it keeps running, so the scheduled task's every-few-minutes start doesn't start it again, and
         # dangerous commands are still stopped while the network is cut
         self.assertTrue(t.is_alive())
@@ -68,6 +71,46 @@ class MonitorLoopTests(TempDirTest):
         t.join(15)
         self.assertFalse(t.is_alive())
         self.assertTrue(pm.stopped)
+
+    def test_the_file_trace_runs_with_the_monitor(self):
+        support.NoFileTrace.made.clear()
+        t = self.start()
+        trace = support.NoFileTrace.made[-1]
+        self.assertTrue(trace.started)
+        self.assertEqual(trace.session, rg.SESSION)
+        self.assertEqual([rg.norm(d) for d in trace.dirs], [rg.norm(self.watch)])
+        self.assertIs(rg.filetrace.current, trace)  # what respond() asks
+        trace.stopped = True  # it ended (someone stopped the session): a new one takes its place
+        self.wait_for(lambda: len(support.NoFileTrace.made) > 1)
+        again = support.NoFileTrace.made[-1]
+        self.assertIsNot(again, trace)
+        self.assertIs(rg.filetrace.current, again)
+        self.stop.set()
+        t.join(15)
+        self.assertTrue(again.stopped)
+        self.assertIsNone(rg.filetrace.current)
+
+    def test_no_file_trace_without_administrator_rights_and_its_own_in_test_mode(self):
+        support.NoFileTrace.made.clear()
+        self.patch("is_admin", lambda: False)
+        stop = threading.Event()
+        t = threading.Thread(target=rg.run, args=(argparse.Namespace(watch=[str(self.watch)], dry_run=True), stop),
+                             daemon=True)
+        t.start()
+        time.sleep(1.5)
+        self.assertEqual(support.NoFileTrace.made, [])
+        stop.set()
+        t.join(15)
+        self.patch("is_admin", lambda: True)
+        stop = threading.Event()
+        t = threading.Thread(target=rg.run, args=(argparse.Namespace(watch=[str(self.watch)], dry_run=True), stop),
+                             daemon=True)
+        t.start()
+        time.sleep(1.5)
+        stop.set()
+        t.join(15)
+        # starting a session ends one of the same name: test mode must not end the installed monitor's
+        self.assertEqual([m.session for m in support.NoFileTrace.made], [rg.SESSION + " (test mode)"])
 
     def test_a_stopped_process_monitor_is_restarted(self):
         self.start()
@@ -92,7 +135,7 @@ class MonitorLoopTests(TempDirTest):
         release = threading.Event()
         self.addCleanup(release.set)
 
-        def respond(reason, dry_run, files=()):  # like the warning staying open
+        def respond(reason, dry_run, files=(), touched=()):  # like the warning staying open
             self.triggered.append(reason)
             release.wait(30)
         self.patch("respond", respond)
@@ -300,19 +343,20 @@ class MonitorLoopTests(TempDirTest):
     def test_periodic_check_finds_what_events_missed(self):
         canaries = rg.plant_canaries([self.watch])
         fired = []
-        handler = mock.Mock(triggered_at=None, fire=fired.append)
+        handler = mock.Mock(triggered_at=None, fire=lambda reason, touched=(): fired.append((reason, touched)))
         rg.periodic_check(handler, canaries)
         self.assertEqual(fired, [])
         canaries[0].unlink()
         rg.periodic_check(handler, canaries)
-        self.assertIn("found by periodic check", fired[0])
+        self.assertIn("found by periodic check", fired[0][0])
+        self.assertEqual(fired[0][1], (str(canaries[0]),))  # for finding the program that did it
         handler.triggered_at = time.time()  # already triggered: nothing more
         rg.periodic_check(handler, canaries)
         self.assertEqual(len(fired), 1)
 
     def test_canary_check_ignores_a_vanished_folder_and_locked_files(self):
         canaries = rg.plant_canaries([self.watch])
-        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError("locked by antivirus")):
+        with mock.patch.object(rg, "read_shared", side_effect=PermissionError("locked by antivirus")):
             self.assertIsNone(rg.check_canaries(canaries))
         gone = [self.dir / "unlinked OneDrive" / rg.CANARY_NAMES[0]]
         self.assertIsNone(rg.check_canaries(gone))

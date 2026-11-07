@@ -26,6 +26,8 @@ This page describes what personal data RansomGuard handles. It is written with t
 
 RansomGuard reads the first 16 KB of files that change in your watched folders to tell whether they look encrypted. What it reads is only compared in memory and never stored, except the file's name in the log when a file looks encrypted.
 
+While monitoring, it also follows Windows' kernel file events to know which program wrote which file in your watched folders (only the program's process ID and the file's name, no content). That stays in memory for a couple of minutes, so that a trigger can pause the right program; only the programs it pauses are written to the log.
+
 ## Connections to the internet
 
 **GitHub** (`api.github.com`, `github.com`) is the only place RansomGuard connects to, and only:

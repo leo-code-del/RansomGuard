@@ -118,6 +118,31 @@ def being_written(path) -> bool:
     return False
 
 
+def open_shared(path):
+    """Open a file to read, binary, without getting in anyone's way: open() lets others read and write it meanwhile,
+    but not rename or delete it, and a program saving a file (write a new one, rename it over the old) would then
+    fail now and then while this reads it."""
+    if not config.IS_WINDOWS:
+        return open(path, "rb")
+    import msvcrt
+    k32 = kernel32()
+    # GENERIC_READ; FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE; OPEN_EXISTING; FILE_ATTRIBUTE_NORMAL
+    h = k32.CreateFileW(str(path), 0x80000000, 0x7, None, 3, 0x80, None)
+    if h is None or h == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())  # FileNotFoundError, PermissionError... as open() would
+    try:
+        fd = msvcrt.open_osfhandle(h, os.O_RDONLY | os.O_BINARY)
+    except OSError:
+        k32.CloseHandle(h)
+        raise
+    return os.fdopen(fd, "rb")
+
+
+def read_shared(path) -> bytes:
+    with open_shared(path) as f:
+        return f.read()
+
+
 def delete_at_restart(path):
     kernel32().MoveFileExW(str(path), None, 4)  # MOVEFILE_DELAY_UNTIL_REBOOT
 

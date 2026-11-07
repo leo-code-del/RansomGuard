@@ -25,15 +25,17 @@ class FakeNetwork:
         self.task = "Running"
         self.commands = []
 
+    def cut(self, saved):
+        """Stands in for _cut_adapters(): the names are saved before anything is turned off."""
+        self.commands.append("cut")
+        saved(sorted(self.up))
+        if self.disable_works:
+            self.disabled |= self.up
+            self.up = set()
+        return 0, ""
+
     def ps(self, cmd, timeout=60):
         self.commands.append(cmd)
-        if "Status -ne 'Disabled'} | ForEach-Object" in cmd:
-            return 0, "\n".join(sorted(self.up)), ""
-        if "Disable-NetAdapter" in cmd:
-            if self.disable_works:
-                self.disabled |= self.up
-                self.up = set()
-            return 0, "", ""
         if ".Count" in cmd:
             return 0, str(len(self.up)), ""
         if "Get-NetFirewallProfile" in cmd:
@@ -76,9 +78,10 @@ class NetworkTests(TempDirTest):
         self.addCleanup(p.stop)
 
     def use(self, net):
-        p = mock.patch.object(rg, "_ps", net.ps)
-        p.start()
-        self.addCleanup(p.stop)
+        for name, value in (("_ps", net.ps), ("_cut_adapters", net.cut)):
+            p = mock.patch.object(rg, name, value)
+            p.start()
+            self.addCleanup(p.stop)
         return net
 
     def test_cut_and_restore(self):
@@ -117,6 +120,23 @@ class NetworkTests(TempDirTest):
         net.up.add("USB Ethernet")  # an adapter re-enabled or plugged in while the warning is open
         rg.disconnect_network()
         self.assertEqual(rg.load_state()["disabled_adapters"], ["Ethernet", "USB Ethernet", "Wi-Fi"])
+
+    def test_the_adapter_names_are_saved_before_they_are_turned_off(self):
+        # the real PowerShell, with a harmless script in place of the one that turns adapters off
+        marker = self.dir / "saved"
+        harmless = ("[Console]::Out.WriteLine(\"NAME`tEthernet\"); [Console]::Out.WriteLine(\"NAME`tWi-Fi 2\")\n"
+                    "[Console]::Out.WriteLine('SAVE'); [Console]::Out.Flush()\n"
+                    "$null = [Console]::In.ReadLine()\n"
+                    f"if (Test-Path -LiteralPath '{marker}') {{ exit 0 }} else {{ exit 3 }}\n")
+        cut = support.REAL["_cut_adapters"]
+        got = []
+        with mock.patch.object(rg, "CUT_PS1", harmless):
+            rc, _ = cut(lambda names: (got.append(names), marker.write_text("x")))
+            self.assertEqual((rc, got), (0, [["Ethernet", "Wi-Fi 2"]]))
+            marker.unlink()
+            rc, _ = cut(mock.Mock(side_effect=OSError("disk full")))
+            self.assertEqual(rc, 3, "it goes on without the names saved: cutting the network matters more")
+        self.assertLess(rg.CUT_PS1.index("ReadLine"), rg.CUT_PS1.index("Disable-NetAdapter"))
 
     def test_restore_needs_admin(self):
         self.use(FakeNetwork())

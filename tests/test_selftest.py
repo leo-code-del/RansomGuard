@@ -46,8 +46,13 @@ class SelfCheckTests(TempDirTest):
 
     def test_the_monitor_in_the_log(self):
         procmon = "2026-11-07 10:00:01,000 [INFO] Process monitor started (real-time trace: {})"
-        ok = rg.check_monitor_log([self.start_line(), procmon.format("True")])
-        self.assertEqual([r for r, _ in ok], ["ok", "ok"])
+        traced = "2026-11-07 10:00:00,500 [INFO] File write tracing started (ETW)"
+        ok = rg.check_monitor_log([self.start_line(), traced, procmon.format("True")])
+        self.assertEqual([r for r, _ in ok], ["ok", "ok", "ok"])
+        self.assertIn("pauses the programs that wrote the files", ok[2][1])
+        untraced = rg.check_monitor_log([traced, self.start_line(), procmon.format("True")])  # an earlier start's
+        self.assertEqual(untraced[2][0], "warn")
+        self.assertIn("writing the most instead", untraced[2][1])
         older = rg.check_monitor_log([self.start_line("1.0.0"), procmon.format("True")])
         self.assertEqual(older[0][0], "warn")
         self.assertIn("v1.0.0", older[0][1])
@@ -59,8 +64,9 @@ class SelfCheckTests(TempDirTest):
         test_mode = "2026-11-07 11:00:00,000 [INFO] RansomGuard 1.0.0 started monitoring (test mode): C:\\tmp"
         self.assertEqual(rg.check_monitor_log([self.start_line(), procmon.format("True"), test_mode])[0][0], "ok")
         chinese = ["2026-11-07 10:00:00,000 [INFO] RansomGuard 1.0.0 開始監控：C:\\x",
+                   "2026-11-07 10:00:00,500 [INFO] 檔案寫入追蹤已啟動（ETW）",
                    "2026-11-07 10:00:01,000 [INFO] 程序監控已啟動（即時追蹤：True）"]
-        self.assertEqual([r for r, _ in rg.check_monitor_log(chinese)], ["warn", "ok"], "a log written in Chinese")
+        self.assertEqual([r for r, _ in rg.check_monitor_log(chinese)], ["warn", "ok", "ok"], "a log written in Chinese")
 
     def test_errors_since_the_monitor_started(self):
         old_error = "2026-11-01 10:00:00,000 [ERROR] something long ago"

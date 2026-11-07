@@ -9,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import canary, config, gui, processes, storage, updates, winapi
+from . import canary, config, filetrace, gui, processes, storage, updates, winapi
 from .config import log, tr
 from .winapi import norm
 
@@ -46,6 +46,7 @@ def stop_monitor():
     proc_enc = winapi.ps_encoded_args(processes.PROC_PS1)[-1][:120]
     winapi._ps(_KILL_PS1.replace("__ME__", f"{os.getpid()},{os.getppid()}")
                .replace("__PROC__", proc_enc))
+    filetrace.stop_trace_session()  # an ended monitor leaves its file trace session to Windows
     log.info(tr("已停止背景監控", "Background monitoring stopped"))
 
 

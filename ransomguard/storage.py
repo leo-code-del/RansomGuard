@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -109,6 +110,9 @@ def state_dir() -> Path:
 
 
 _state_secured = False
+# held while state.json is read, changed and written back: on a trigger the network is cut while the paused
+# programs and the detection report are recorded
+state_lock = threading.RLock()
 STATE_FILES = ("state.json", "canaries.json", "watch.json", "exclude.json", "monitor_stopped", "detection_paused")
 
 

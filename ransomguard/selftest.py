@@ -17,6 +17,7 @@ from .config import log, tr
 OK, WARN, FAIL = "ok", "warn", "fail"
 _START = re.compile(r"RansomGuard (\d+\.\d+\.\d+) (開始監控|started monitoring)[：:]")
 _PROCMON = re.compile(r"(程序監控已啟動|Process monitor started).*[（(](?:即時追蹤|real-time trace)[：:] ?(True|False)")
+_FILETRACE = re.compile(r"檔案寫入追蹤已啟動|File write tracing started")
 _WRITE_RIGHTS = ("FullControl", "Modify", "Write", "Delete", "ChangePermissions", "TakeOwnership", "CreateFiles",
                  "CreateDirectories", "AppendData")
 _ADMINS, _SYSTEM = "S-1-5-32-544", "S-1-5-18"
@@ -88,6 +89,12 @@ def check_monitor_log(lines):
         out.append((WARN, tr("程序監控正在執行，但沒有即時追蹤：很短的程序可能抓不到",
                              "The process monitor is running without real-time trace: very short processes may "
                              "be missed")))
+    if config.FILE_TRACE:
+        out.append((OK, tr("檔案寫入追蹤正在執行：觸發時會暫停寫入那些檔案的程式",
+                           "File write tracing is running: a trigger pauses the programs that wrote the files"))
+                   if any(_FILETRACE.search(line) for line in lines[start:]) else
+                   (WARN, tr("檔案寫入追蹤沒有啟動：觸發時改為暫停寫入量最大的程式",
+                             "File write tracing didn't start: a trigger pauses the programs writing the most instead")))
     return out
 
 
@@ -224,7 +231,9 @@ def drill(timeout=15.0):
                 obs.stop()
                 obs.join(10)
             if caught:
-                results.append((OK, tr(f"演練：{name}，{took:.1f} 秒內偵測到", f"Drill: {name}, detected within {took:.1f} s")))
+                when = (f"{took:.1f} " + tr("秒", "s") if took >= 1 else  # below a second: "0.0 s" would look broken
+                        f"{max(1, round(took * 1000))} " + tr("毫秒", "ms"))
+                results.append((OK, tr(f"演練：{name}，{when}內偵測到", f"Drill: {name}, detected within {when}")))
             else:
                 results.append((FAIL, tr(f"演練：{name}，{timeout:.0f} 秒內沒有偵測到",
                                          f"Drill: {name}, not detected within {timeout:.0f} s")))

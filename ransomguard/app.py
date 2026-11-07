@@ -5,8 +5,8 @@ import threading
 import time
 from pathlib import Path
 
-from . import (backup, canary, config, defender, detection, folders, gui, install, network, processes, response,
-               storage, tray, updates, winapi)
+from . import (backup, canary, config, defender, detection, filetrace, folders, gui, install, network, processes,
+               response, storage, tray, updates, winapi)
 from .config import log, tr
 
 
@@ -79,8 +79,8 @@ def run(args, stop=None):
 
     stop = stop or threading.Event()
 
-    def on_trigger(reason, files=()):
-        proc = response.respond(reason, args.dry_run, files)
+    def on_trigger(reason, files=(), touched=()):
+        proc = response.respond(reason, args.dry_run, files, touched)
         if not args.dry_run:
             if proc is not None:
                 # wait for the user to close the warning, so it isn't closed together with this program
@@ -96,7 +96,8 @@ def run(args, stop=None):
     def trigger(reason):
         # in a thread of its own: the response lasts until the warning is closed, and the thread that found
         # the problem (the process monitor, the file monitor, the periodic check) has to go on working
-        threading.Thread(target=on_trigger, args=(reason, list(handler.last_files)), daemon=True).start()
+        threading.Thread(target=on_trigger, args=(reason, list(handler.last_files), list(handler.last_touched)),
+                         daemon=True).start()
 
     scanner = None
     if config.DEFENDER_SCAN_DOWNLOADS and config.IS_WINDOWS and defender.MPCMDRUN.is_file():
@@ -153,7 +154,21 @@ def run(args, stop=None):
                 observer.unschedule(e.watch)  # the stopped watcher; a new one takes its place
         for d in dirs:
             observer.schedule(handler, str(d), recursive=True)
+        if trace is not None:
+            trace.watch(watch_dirs)
 
+    def start_trace():
+        """Follow which program writes which file in the watched folders (administrators only)."""
+        # test mode has a session of its own: starting one ends a session of the same name
+        t = filetrace.FileTrace(filetrace.SESSION + (" (test mode)" if args.dry_run else ""))
+        t.watch(watch_dirs)
+        if not t.start():
+            return None
+        filetrace.current = t
+        log.info(tr("檔案寫入追蹤已啟動（ETW）", "File write tracing started (ETW)"))
+        return t
+
+    trace = None
     observer = start_observer()
     procmon = None
     if config.PROCESS_MONITOR and config.IS_WINDOWS:
@@ -171,6 +186,8 @@ def run(args, stop=None):
              tr("（測試模式）", " (test mode)") if args.dry_run else "",
              "; ".join(str(d) for d in watch_dirs))
     log.info(tr("誘餌檔：%s", "Canary files: %s"), "; ".join(str(p) for p in canaries))
+    if config.FILE_TRACE and config.IS_WINDOWS and winapi.is_admin():  # logged after the start, for the self-check
+        trace = start_trace()
     try:
         last = pruned = probed = started = time.time()
         backup_checked = 0.0
@@ -216,9 +233,18 @@ def run(args, stop=None):
                 log.error(tr("程序監控意外停止，重新啟動（第 %d 次）",
                              "Process monitor stopped unexpectedly; restarting (attempt %d)"), restarts)
                 procmon.start()
+            if restarts < 10 and trace is not None and not trace.alive():
+                restarts += 1
+                log.error(tr("檔案寫入追蹤意外停止，重新啟動（第 %d 次）",
+                             "File write tracing stopped unexpectedly; restarting (attempt %d)"), restarts)
+                trace.stop()
+                trace = start_trace()
     except KeyboardInterrupt:
         log.info(tr("使用者中止", "Stopped by user"))
     finally:
+        if trace is not None:
+            filetrace.current = None
+            trace.stop()
         if procmon is not None:
             procmon.stop()
         if icon is not None:

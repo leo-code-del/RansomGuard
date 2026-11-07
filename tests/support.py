@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 MODULES = [importlib.import_module(f"ransomguard.{name}") for name in (
     "config", "winapi", "storage", "folders", "canary", "detection", "processes", "response", "defender",
-    "network", "install", "updates", "backup", "selftest", "tray", "gui", "app")]
+    "network", "install", "updates", "backup", "selftest", "tray", "filetrace", "gui", "app")]
 
 
 class _Namespace:
@@ -79,7 +79,8 @@ rg.log.propagate = False
 rg.init_lang("en")
 
 REAL = {name: getattr(rg, name)
-        for name in ("fullscreen_alert", "set_paused", "_known_folder", "state_dir", "secure_state_dir", "Tray")}
+        for name in ("fullscreen_alert", "set_paused", "_known_folder", "state_dir", "secure_state_dir", "Tray",
+                     "FileTrace", "stop_trace_session", "_cut_adapters")}
 SANDBOX = Path(tempfile.mkdtemp(prefix="rg_sandbox_"))
 TEST_PID = os.getpid()  # saved now: some tests replace os.getpid
 # the interpreter itself; in a venv, sys.executable is a small launcher that starts this as a child process
@@ -100,6 +101,31 @@ class NoTray:
 
     def stop(self):
         self.stopped = True
+
+
+class NoFileTrace:
+    """The kernel file trace, not started: what the monitor gets in the tests. `made` keeps every one."""
+    made = []
+
+    def __init__(self, session="RansomGuard File Trace"):
+        self.session, self.dirs, self.started, self.stopped = session, [], False, False
+        NoFileTrace.made.append(self)
+
+    def watch(self, dirs):
+        self.dirs = list(dirs)
+
+    def start(self):
+        self.started = True
+        return True
+
+    def alive(self):
+        return not self.stopped
+
+    def stop(self):
+        self.stopped = True
+
+    def culprits(self, evidence):
+        return []
 
 
 def forbidden(what):
@@ -136,7 +162,7 @@ def setUpModule():
     """Safety net for the whole suite: user folders, the app folder and the install folder point into a
     temporary sandbox, and everything that would change the real computer is forbidden: PowerShell
     (network adapters, firewall, scheduled tasks), ipconfig / netsh / shutdown, the internet, the
-    full-screen warning and pausing any process the tests didn't start. (The installed exe can't be
+    full-screen warning and pausing any process the tests didn't start. The kernel file trace isn't started. (The installed exe can't be
     started either: INSTALL_EXE points into the sandbox.) A message box would wait for a click, so
     alert() does nothing. Tests replace these as they need. Each test file calls it (and tearDownModule)."""
     SANDBOX.mkdir(parents=True, exist_ok=True)
@@ -156,6 +182,10 @@ def setUpModule():
             ("alert", lambda title, msg: None),
             ("notice", lambda title, msg: None),
             ("Tray", NoTray),  # the notification-area icon would show on the screen
+            ("_cut_adapters", forbidden("network adapters")),
+            # a kernel trace session of the same name as the installed monitor's would end that one
+            ("FileTrace", NoFileTrace),
+            ("stop_trace_session", lambda session=None: None),
             # the backup check reads File History's record and folder: the sandbox's, never this computer's
             ("_file_history_registry_time", lambda: None),
             ("_file_history_folder", lambda: SANDBOX / "FileHistory" / "Configuration")):

@@ -68,8 +68,8 @@ Any one of these triggers it:
 
 **What RansomGuard does**
 
-1. Pauses the programs writing the most data (and the program behind a dangerous command), which stops the encryption, and has Microsoft Defender scan them. Windows' own processes, Defender and the desktop are never paused.
-2. Disables all network adapters (the firewall is used as a fallback).
+1. Pauses the programs that wrote the files that looked encrypted, as Windows' kernel file events tell (if they name nobody: the programs writing the most data), and the program behind a dangerous command. That stops the encryption; Microsoft Defender then scans them. Windows' own processes, Defender and the desktop are never paused.
+2. At the same time, disables all network adapters (the firewall is used as a fallback).
 3. Covers every screen with a red warning that names the paused programs.
 
 **What you should do**
@@ -90,7 +90,7 @@ The home page shows one thing: whether this computer is protected (**Protected**
 | | **Pause or stop monitoring** | **Pause file detection** for 30 minutes or 2 hours before bulk work (converting, renaming or encrypting many files on purpose): files that look encrypted, unknown extensions, ransom notes and encrypted copies aren't counted, while canary files and dangerous commands are still watched. It resumes by itself; the home page shows until when. Or **stop monitoring** until you click **Install and start monitoring** or restart Windows |
 | | **Restore network and restart monitoring** | Restores the network after a false alarm. While the network is cut, the control panel shows the detection report (why it triggered, which files looked encrypted, which programs were paused), and so does this button before it asks, so you can tell a false alarm from a real attack |
 | **Backup** | The home page's **Backup** | RansomGuard can't bring encrypted files back; only a backup can. This row shows whether File History or OneDrive backs up your files; clicking it shows when File History last did, explains how to set one up and opens Windows' settings. Without an up-to-date backup the background monitor reminds you, at most every 14 days; tick "I back up with another program" to stop that |
-| **Tools** | **Self-check** | Makes sure protection really works: background monitoring and the process monitor are running, in the control panel's version; the canary files are intact and hidden; only administrators can change the state folder; no errors since monitoring started; the network and backup state. Then a drill in a temporary folder (simulated encryption of 12 documents and a changed canary file, in test mode: no network cut, no warning) shows how fast detection reacts. Takes about 10 seconds, changes nothing |
+| **Tools** | **Self-check** | Makes sure protection really works: background monitoring, the process monitor and file write tracing are running, in the control panel's version; the canary files are intact and hidden; only administrators can change the state folder; no errors since monitoring started; the network and backup state. Then a drill in a temporary folder (simulated encryption of 12 documents and a changed canary file, in test mode: no network cut, no warning) shows how fast detection reacts. Takes about 10 seconds, changes nothing |
 | | **Check for updates** | Asks GitHub whether there is a newer version and tells you; if there is, asks whether to update |
 | | **Preview warning** | Shows what the warning looks like, without cutting the network |
 | | **Open log** | Opens `%LOCALAPPDATA%\RansomGuard\guard.log` (entries older than 30 days are removed) |
@@ -170,7 +170,8 @@ It never deletes your own files, with one exception listed under [Things that ca
 | When | What it does |
 | --- | --- |
 | A program runs a dangerous command (deleting restore points, turning off Defender...) | Ends that program and pauses the programs that started it (up to three levels) |
-| Possible ransomware is detected | Pauses the programs writing the most data (up to five), asks Microsoft Defender to scan the paused programs and run a quick scan, disables every network adapter (if that fails: blocks all traffic in the firewall, releases the IP address and disconnects Wi-Fi), shows the full-screen warning |
+| Possible ransomware is detected | Pauses the programs that wrote the files that looked encrypted (or, if Windows' file events name none, the ones writing the most data; up to five), asks Microsoft Defender to scan the paused programs and run a quick scan, meanwhile disables every network adapter (if that fails: blocks all traffic in the firewall, releases the IP address and disconnects Wi-Fi), shows the full-screen warning |
+| Always, while monitoring | Follows which program writes which file in the watched folders (Windows' kernel file events), for a trigger to know whom to pause. Kept in memory for a couple of minutes, never written down |
 | A new program, script or archive appears in Downloads or on the Desktop | Asks Microsoft Defender to scan it once it is complete, and tells you if Defender finds a threat |
 | While the warning is open | Disables any network adapter that gets turned on again |
 | You restore the network | Turns the network adapters back on, puts the firewall settings back, and resumes paused programs that Defender finds clean |
@@ -244,14 +245,14 @@ Keep using antivirus software (such as Microsoft Defender), install Windows upda
 
 - It is not antivirus software. It doesn't recognize malware; it only reacts to behavior that looks like encryption.
 - It watches only Desktop, Documents, Pictures, Downloads, Videos and Music. Files on other drives, network drives and cloud folders outside these are not protected, unless you add them with **Watched folders…**.
-- Some files are lost before it reacts. It triggers after about 8 to 10 files look encrypted within 30 seconds (or when a canary file is touched), and Windows reports file changes with a delay of about one second.
+- Some files are lost before it reacts. It triggers after about 8 to 10 files look encrypted within 30 seconds (or when a canary file is touched), and cutting the network takes a second or two.
 - Ransomware that encrypts slowly enough to stay under these thresholds is caught only if it touches a canary file. So is ransomware that keeps each file's name and encrypts only the middle of photos and videos, leaving their start intact (for Office files, zip archives, PDFs and text files the end is checked too).
 - Files in subfolders you excluded under **Watched folders…** aren't checked at all; ransomware encrypting them is caught only by the canary files and dangerous-command checks elsewhere.
 - Ransomware that deletes restore points through Windows programming interfaces, instead of running commands such as `vssadmin`, is not caught by the dangerous-command check.
-- Programs that write through memory-mapped files don't show up in the write counts, so they may not be found to be paused.
+- Programs that write through memory-mapped files look like Windows itself in the file events and don't show up in the write counts either, so they may not be found to be paused.
 - Ransomware that already has administrator rights can stop RansomGuard. The scheduled task starts it again within a minute; if the ransomware deletes the task too, the health check tells you within a day.
 - After it triggers, it doesn't trigger a second time until you restore the network, but it keeps stopping dangerous commands and pausing the programs behind them.
-- It has been tested with automated tests and simulated ransomware (a test script using 11 techniques, from encrypting and renaming to partial and intermittent encryption and encrypted copies), alongside 11 kinds of everyday work that must not trigger it, never with real ransomware.
+- It has been tested with automated tests and simulated ransomware (a test script using 11 techniques, from encrypting and renaming to partial and intermittent encryption and encrypted copies), alongside 11 kinds of everyday work that must not trigger it, never with real ransomware. Which program to pause was checked with a stand-in encryptor next to a program writing 2 MB a second: the encryptor was found in 20 of 20 trials, the busy program never.
 - Windows 10 and 11 only, and it needs administrator rights.
 
 ### Things that can go wrong

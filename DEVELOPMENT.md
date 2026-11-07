@@ -35,6 +35,7 @@ To run with Python instead of the exe, the project includes a few helper files (
 | `canary` | The hidden canary files |
 | `detection` | Telling encryption from everyday work; the file-event handler |
 | `processes` | Destructive commands and the process monitor |
+| `filetrace` | Which program writes which file, from Windows' kernel file events (ETW), so a trigger pauses the right one |
 | `response` | What happens on a trigger: pausing programs, the full-screen warning |
 | `defender` | Microsoft Defender scans and the download scanner |
 | `network` | Cutting the network off and restoring it |
@@ -74,7 +75,8 @@ The tests only use temporary folders and never touch your files, the network set
 
 - user folders, the app folder and the install folder point into a temporary sandbox;
 - a test that reaches the PowerShell commands for network adapters, the firewall or scheduled tasks, `ipconfig` / `netsh` / shutdown, the internet or the full-screen warning without replacing it fails instead;
-- only processes the tests started themselves can be paused.
+- only processes the tests started themselves can be paused;
+- no kernel file trace is started (one with the installed monitor's session name would end that one's); the test that starts a real one, under a name of its own, runs only with administrator rights.
 
 Some tests use read-only Windows features for real: watching new processes through WMI, Defender scans of temporary files, and reading scheduled tasks.
 

@@ -1,30 +1,75 @@
 """Cutting the network off (adapters, firewall fallback), keeping it off, and restoring it."""
 import json
+import subprocess
+import threading
 import time
 
 from . import canary, config, defender, install, storage, winapi
 from .config import log, tr
+
+# One PowerShell lists the adapters that are on, waits until their names are saved (so they can be turned on
+# again even if this program is ended right after) and turns them off: starting PowerShell and its network
+# module takes most of a second, and once is enough.
+CUT_PS1 = r'''
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ProgressPreference = 'SilentlyContinue'
+$a = @(Get-NetAdapter | Where-Object {$_.Status -ne 'Disabled'})
+foreach ($n in $a) { [Console]::Out.WriteLine("NAME`t$($n.Name)") }
+[Console]::Out.WriteLine("SAVE"); [Console]::Out.Flush()
+$null = [Console]::In.ReadLine()
+$a | Disable-NetAdapter -Confirm:$false
+'''
+
+
+def _cut_adapters(saved):
+    """Turn off every network adapter that is on, calling saved(names) before. Returns (return code, error text)."""
+    proc = subprocess.Popen(winapi.ps_encoded_args(CUT_PS1, "-NonInteractive"), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=winapi.CREATE_NO_WINDOW)
+    timer = threading.Timer(60, proc.kill)  # never wait forever
+    timer.start()
+    try:
+        names = []
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            if line.startswith("NAME\t"):
+                names.append(line[5:])
+            elif line == "SAVE":
+                break
+        try:
+            saved(names)
+        except Exception:  # go on: cutting the network matters more
+            log.exception(tr("無法記錄要停用的網路卡", "Could not record the network adapters to disable"))
+        try:
+            proc.stdin.write(b"\n")
+            proc.stdin.close()
+        except OSError:
+            pass
+        _, err = proc.communicate()
+        return proc.returncode, err.decode("utf-8", "replace").strip()
+    finally:
+        timer.cancel()
 
 
 def disconnect_network() -> bool:
     if not config.IS_WINDOWS:
         log.error(tr("目前只支援 Windows 斷網", "Cutting the network is only supported on Windows"))
         return False
-    st = storage.load_state()
+
+    def saved(names):
+        with storage.state_lock:
+            st = storage.load_state()
+            st["disabled_adapters"] = sorted(set(st.get("disabled_adapters", []) + names))
+            st["triggered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            storage.save_state(st)
+
     try:
-        _, out, _ = winapi._ps("Get-NetAdapter | Where-Object {$_.Status -ne 'Disabled'} "
-                               "| ForEach-Object {$_.Name}")
-        names = [line.strip() for line in out.splitlines() if line.strip()]
-        st["disabled_adapters"] = sorted(set(st.get("disabled_adapters", []) + names))
-        st["triggered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        storage.save_state(st)
-        rc, _, err = winapi._ps("Get-NetAdapter | Where-Object {$_.Status -ne 'Disabled'} "
-                                "| Disable-NetAdapter -Confirm:$false")
+        rc, err = _cut_adapters(saved)
         if rc != 0:
             log.error(tr("停用網路卡時出現錯誤：%s", "Error while disabling network adapters: %s"), err)
     except Exception:
         log.exception(tr("停用網路卡失敗", "Failed to disable network adapters"))
 
+    st = storage.load_state()
     up = adapters_up()
     if up == "0":
         log.critical(tr("已停用所有網路卡：%s", "All network adapters disabled: %s"),
@@ -49,17 +94,18 @@ def adapters_up() -> str:
 def block_firewall():
     """Fallback when disabling adapters fails: block all traffic in every firewall profile (the original
     settings are saved in state.json)."""
-    st = storage.load_state()
     try:
-        if "firewall" not in st:
-            _, out, _ = winapi._ps(
-                "@(Get-NetFirewallProfile | ForEach-Object { [pscustomobject]@{"
-                "Name=$_.Name; Enabled=\"$($_.Enabled)\"; "
-                "In=\"$($_.DefaultInboundAction)\"; Out=\"$($_.DefaultOutboundAction)\"} })"
-                " | ConvertTo-Json -Compress")
-            saved = json.loads(out)
-            st["firewall"] = saved if isinstance(saved, list) else [saved]
-            storage.save_state(st)
+        with storage.state_lock:
+            st = storage.load_state()
+            if "firewall" not in st:
+                _, out, _ = winapi._ps(
+                    "@(Get-NetFirewallProfile | ForEach-Object { [pscustomobject]@{"
+                    "Name=$_.Name; Enabled=\"$($_.Enabled)\"; "
+                    "In=\"$($_.DefaultInboundAction)\"; Out=\"$($_.DefaultOutboundAction)\"} })"
+                    " | ConvertTo-Json -Compress")
+                saved = json.loads(out)
+                st["firewall"] = saved if isinstance(saved, list) else [saved]
+                storage.save_state(st)
         rc, _, err = winapi._ps("Set-NetFirewallProfile -All -Enabled True "
                                 "-DefaultInboundAction Block -DefaultOutboundAction Block")
         if rc == 0:

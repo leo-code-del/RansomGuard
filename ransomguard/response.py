@@ -1,5 +1,5 @@
-"""What happens on a trigger: pausing the programs that write the most (or started a destructive
-command) and the full-screen warning."""
+"""What happens on a trigger: pausing the programs that wrote the files (or write the most, or started a
+destructive command), cutting the network and the full-screen warning."""
 import base64
 import ctypes
 import json
@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 
-from . import config, defender, install, network, storage, winapi
+from . import config, defender, filetrace, install, network, storage, winapi
 from .config import log, tr
 from .winapi import norm
 
@@ -213,11 +213,13 @@ def fullscreen_alert(reason: str, status: str, wait: bool = False, paused=(), fi
         return None
 
 
-# File events don't say which program wrote a file, but a program that is encrypting writes far more than
-# anything else. So on a trigger every process's write counters are read twice, PAUSE_SAMPLE_SEC apart, and
-# the heaviest writers are paused (suspended, not killed: restoring the network after a false alarm lets
-# them run again). Defender then scans their program files and removes what it recognises; on its own it
-# often recognises new ransomware only some time after the encryption has begun.
+# On a trigger the programs that wrote the files that looked encrypted are paused (suspended, not killed:
+# restoring the network after a false alarm lets them run again): the kernel's file events say who wrote what
+# (filetrace). Without them (or if they name nobody: a program writing through a memory-mapped file looks like
+# Windows itself), a program that is encrypting still writes far more than anything else: every process's write
+# counters are read twice, PAUSE_SAMPLE_SEC apart, and the heaviest writers are paused. Defender then scans
+# their program files and removes what it recognises; on its own it often recognises new ransomware only some
+# time after the encryption has begun.
 PAUSE_SAMPLE_SEC = 1.0
 PAUSE_MIN_WRITES = 20         # a program is paused if it wrote at least this many times during the sample...
 PAUSE_MIN_BYTES = 256 * 1024  # ...and at least this much data
@@ -289,9 +291,44 @@ def set_paused(pid: int, paused: bool) -> bool:
     return ok
 
 
-def pause_writers(dry_run: bool) -> list:
-    """Pause the programs writing the most right now (test mode: only report them).
-    Returns [{"pid", "name", "path", "paused", "result"}]."""
+def pause_culprits(evidence, dry_run: bool) -> list:
+    """Pause the programs the file trace saw writing the evidence files (test mode: only report them). [] if
+    there is no trace or it names nobody."""
+    trace = filetrace.current
+    if trace is None or not evidence:
+        return []
+    try:
+        rows = trace.culprits(evidence)
+        procs = {pid: (parent, name) for pid, parent, name in winapi.process_list()}
+    except Exception:
+        log.exception(tr("讀取檔案寫入追蹤失敗", "Failed to read the file write trace"))
+        return []
+    me, found = os.getpid(), []
+    for pid, files in rows:
+        if pid not in procs or pid == me or procs[pid][0] == me:  # exited, or this program and what it started
+            continue
+        name, path = procs[pid][1], winapi.process_path(pid)
+        if trusted_process(name, path):
+            continue
+        p = _pause(pid, name, path, dry_run)
+        log.critical(tr("寫入這些檔案的程式 %s（PID %s，%d 個檔案），%s：%s",
+                        "Program that wrote these files %s (PID %s, %d files), %s: %s"),
+                     name, pid, files, p["result"], path)
+        found.append(p)
+        if len(found) >= PAUSE_MAX:
+            break
+    if not found:
+        log.info(tr("檔案寫入追蹤沒有找到寫入這些檔案的程式，改為暫停大量寫入的程式",
+                    "The file write trace found no program that wrote these files; pausing the heaviest writers"))
+    return found
+
+
+def pause_writers(dry_run: bool, evidence=()) -> list:
+    """Pause the programs that wrote the evidence files, or else the ones writing the most right now (test mode:
+    only report them). Returns [{"pid", "name", "path", "paused", "result"}]."""
+    found = pause_culprits(evidence, dry_run)
+    if found:
+        return found
     try:
         before = write_counters()
         time.sleep(PAUSE_SAMPLE_SEC)
@@ -323,10 +360,11 @@ def record_paused(entries):
     if not new:
         return
     try:
-        st = storage.load_state()
-        known = {p.get("pid") for p in st.get("paused", [])}
-        st["paused"] = st.get("paused", []) + [p for p in new if p["pid"] not in known]
-        storage.save_state(st)
+        with storage.state_lock:
+            st = storage.load_state()
+            known = {p.get("pid") for p in st.get("paused", [])}
+            st["paused"] = st.get("paused", []) + [p for p in new if p["pid"] not in known]
+            storage.save_state(st)
     except OSError:
         log.exception(tr("無法記錄被暫停的程式", "Could not record the paused programs"))
 
@@ -381,9 +419,10 @@ def record_incident(reason: str, files):
     """Keep the detection report (why, which files) until the network is restored, for the control panel. Never
     raises: nothing may stop the network from being cut."""
     try:
-        st = storage.load_state()
-        st["incident"] = {"reason": reason, "files": list(files)}
-        storage.save_state(storage.clean_state(st))
+        with storage.state_lock:
+            st = storage.load_state()
+            st["incident"] = {"reason": reason, "files": list(files)}
+            storage.save_state(storage.clean_state(st))
     except OSError:
         log.exception(tr("無法記錄偵測報告", "Could not record the detection report"))
     if files:
@@ -391,17 +430,21 @@ def record_incident(reason: str, files):
                      "; ".join(files))
 
 
-def respond(reason: str, dry_run: bool, files=()):
-    """Handle a trigger. files: the files that were counted (the evidence). Returns the full-screen warning process
-    (may be None)."""
+def respond(reason: str, dry_run: bool, files=(), touched=()):
+    """Handle a trigger. files: the files that were counted (the evidence); touched: canary files that were changed.
+    Returns the full-screen warning process (may be None)."""
     config.init_lang()  # use the language most recently chosen in the control panel (the monitor may predate the change)
     log.critical(tr("偵測到疑似勒索病毒行為：%s", "Possible ransomware behavior detected: %s"), reason)
+    cut, result = None, {}
+    if not dry_run:  # at once, alongside pausing: PowerShell alone takes most of a second to start
+        cut = threading.Thread(target=lambda: result.update(ok=network.disconnect_network()), daemon=True)
+        cut.start()
     # pause the encrypting program before anything else: every second it keeps running costs files
     found = _early_paused[:]  # the programs behind a destructive command, paused already
     _early_paused.clear()
     if config.PAUSE_ON_TRIGGER and config.IS_WINDOWS:
         seen = {p["pid"] for p in found}
-        found += [p for p in pause_writers(dry_run) if p["pid"] not in seen]
+        found += [p for p in pause_writers(dry_run, list(touched) + list(files)) if p["pid"] not in seen]
     if dry_run:
         log.warning(tr("[測試模式] 正式模式下，此時會切斷網路",
                        "[Test mode] In normal mode the network would be cut off now"))
@@ -411,7 +454,8 @@ def respond(reason: str, dry_run: bool, files=()):
     if config.DEFENDER_SCAN_ON_TRIGGER and config.IS_WINDOWS:
         threading.Thread(target=defender.ask_defender, args=([p["path"] for p in found if p["path"]],),
                          daemon=True).start()
-    ok = network.disconnect_network()
+    cut.join()
+    ok = result.get("ok", False)
     proc = fullscreen_alert(reason, "cut" if ok else "partial", paused=found, files=files)
     if config.HIBERNATE_ON_TRIGGER:
         log.critical(tr("依設定立即休眠", "Hibernating now, as configured"))
