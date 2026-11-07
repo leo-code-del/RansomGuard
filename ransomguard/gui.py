@@ -99,6 +99,7 @@ def gui(auto_update=False):
     import queue
     import tkinter as tk
     from tkinter import filedialog, messagebox, scrolledtext
+    from tkinter import font as tkfont
 
     if config.IS_WINDOWS and not winapi.is_admin():  # reopen as administrator
         script = [] if config.FROZEN else [str(config.SCRIPT)]
@@ -790,7 +791,6 @@ def gui(auto_update=False):
 
         menu = tk.Frame(host, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
         menu.pack(fill="x", pady=(px(14), 0))
-        menu.columnconfigure(1, weight=1)
         new = w.get("new")
         rows = (
             (tr("防護", "Protection"), tr("監控、暫停、恢復網路", "Monitoring, pause, restore network"), None,
@@ -800,38 +800,58 @@ def gui(auto_update=False):
              tr("自我檢查、更新、紀錄檔", "Self-check, updates, log"), "new" if new else None, lambda: show_page("tools")),
             (tr("設定", "Settings"), tr("監控的資料夾、自動更新、解除安裝", "Watched folders, automatic updates, uninstall"),
              None, lambda: show_page("settings")))
+        # the names take the width of the longest one, so the summaries line up from row to row
+        name_width = max(tkfont.Font(family=w["font"], size=11, weight="bold").measure(r[0]) for r in rows)
         for i, (name, summary, kind, open_it) in enumerate(rows):
             if i:
-                tk.Frame(menu, bg=C["border"], height=1).grid(row=2 * i - 1, column=0, columnspan=3, sticky="ew",
-                                                              padx=px(16))
-            menu_row(menu, 2 * i, name, summary, kind, open_it)
+                tk.Frame(menu, bg=C["border"], height=1).pack(fill="x", padx=px(16))
+            menu_row(menu, name, summary, kind, open_it, name_width)
 
-    def menu_row(menu, r, name, summary, kind, open_it):
-        """A row of the home page: name, a short summary, ›. The whole row opens it."""
+    def menu_row(menu, name, summary, kind, open_it, name_width):
+        """A row of the home page: name, a short summary, ›. The whole row opens it, and the whole row (padding
+        included) turns gray under the mouse: one frame holds it all."""
         F, hover = w["font"], "#f5f7fb"
-        cells = [tk.Label(menu, text=name, font=(F, 11, "bold"), fg=C["text"], bg=C["card"], anchor="w")]
-        cells[0].grid(row=r, column=0, sticky="nsew", padx=(px(18), px(12)), ipady=px(11))
-        mid = tk.Frame(menu, bg=C["card"])
-        mid.grid(row=r, column=1, sticky="nsew")
-        cells.append(mid)
+        row = tk.Frame(menu, bg=C["card"])
+        row.pack(fill="x")
+        row.columnconfigure(1, weight=1)
+        row.columnconfigure(0, minsize=name_width + px(30))
+        # (no padding or border of its own: its width is then exactly the measured one)
+        label = tk.Label(row, text=name, font=(F, 11, "bold"), fg=C["text"], bg=C["card"], anchor="w", bd=0, padx=0)
+        label.grid(row=0, column=0, sticky="w", padx=(px(18), px(12)), pady=px(11))
+        mid = tk.Frame(row, bg=C["card"])
+        mid.grid(row=0, column=1, sticky="w")
+        parts = [row, label, mid]
         if kind == "backup":  # its state, with a light
             dot = tk.Label(mid, text="●", font=(F, 10), fg=C["off"], bg=C["card"])
             dot.pack(side="left")
-            cells.append(dot)
+            parts.append(dot)
         text = tk.Label(mid, text=summary, font=(F, 10), bg=C["card"], fg="#2563eb" if kind == "new" else C["muted"])
-        text.pack(side="left", padx=(px(4), 0) if kind == "backup" else 0, pady=px(11))
-        cells.append(text)
+        text.pack(side="left", padx=(px(4), 0) if kind == "backup" else 0)
+        parts.append(text)
         if kind == "backup":
             pw["backup"] = (dot, text)
-        arrow = tk.Label(menu, text="›", font=(F, 15), fg=C["muted"], bg=C["card"])
-        arrow.grid(row=r, column=2, sticky="nsew", padx=(px(8), px(18)))
-        cells.append(arrow)
-        cells[0].rg_text, cells[0].rg_open = name, open_it  # (lets a screenshot script open it)
-        for c in cells:
-            c.config(cursor="hand2")
-            c.bind("<Button-1>", lambda _: open_it())
-            c.bind("<Enter>", lambda _: [x.config(bg=hover) for x in cells])
-            c.bind("<Leave>", lambda _: [x.config(bg=C["card"]) for x in cells])
+        arrow = tk.Label(row, text="›", font=(F, 15), fg=C["muted"], bg=C["card"])
+        arrow.grid(row=0, column=2, sticky="e", padx=(px(8), px(18)))
+        parts.append(arrow)
+        label.rg_text, label.rg_open = name, open_it  # (lets a screenshot script open it)
+
+        def follow_mouse(_=None):
+            # moving between the parts of the row leaves one and enters the next: look where the mouse is now,
+            # so the row doesn't blink white in between
+            def paint():
+                if not row.winfo_exists():
+                    return
+                under = row.winfo_containing(*row.winfo_pointerxy())
+                color = hover if under is not None and str(under).startswith(str(row)) else C["card"]
+                if row.cget("bg") != color:
+                    for p in parts:
+                        p.config(bg=color)
+            row.after_idle(paint)
+        for p in parts:
+            p.config(cursor="hand2")
+            p.bind("<Button-1>", lambda _: open_it())
+            p.bind("<Enter>", follow_mouse)
+            p.bind("<Leave>", follow_mouse)
 
     def nb(text):
         """Chinese text with no-break spaces: Tk breaks lines at spaces, and in Chinese the only ones are those
