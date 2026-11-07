@@ -841,8 +841,10 @@ def gui(auto_update=False):
             def paint():
                 if not row.winfo_exists():
                     return
-                under = row.winfo_containing(*row.winfo_pointerxy())
-                color = hover if under is not None and str(under).startswith(str(row)) else C["card"]
+                under = str(row.winfo_containing(*row.winfo_pointerxy()) or "")
+                # the row itself or a part inside it; not just the same start (".!frame" is not ".!frame3")
+                inside = under == str(row) or under.startswith(str(row) + ".")
+                color = hover if inside else C["card"]
                 if row.cget("bg") != color:
                     for p in parts:
                         p.config(bg=color)
