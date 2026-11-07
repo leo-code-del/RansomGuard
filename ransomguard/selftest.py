@@ -47,6 +47,25 @@ def check_task():
                     f"Background monitoring is not running ({state}): click \"Install and start monitoring\"")
 
 
+def check_restart_trigger():
+    """The scheduled task starts the monitor again within MONITOR_RESTART_MINUTES if something ends it."""
+    if not install.task_state() or install.stopped_by_user():
+        return []  # not installed, or stopped by the user (reported above)
+    minutes, interval = install.MONITOR_RESTART_MINUTES, install.restart_interval()
+    if interval == f"PT{minutes}M":
+        return [(OK, tr(f"監控被結束時，{minutes} 分鐘內會自動重新啟動",
+                        f"If monitoring is ended, it starts again within {minutes} minute(s)"))]
+    found = re.fullmatch(r"PT(\d+)M", interval)
+    if found:  # an older install's interval; the monitor of this version changes it when it starts
+        return [(WARN, tr(f"監控被結束時要 {found.group(1)} 分鐘內才會重新啟動（這個版本是 {minutes} 分鐘）："
+                          "按「安裝並開始監控」更新",
+                          f"If monitoring is ended, it starts again only within {found.group(1)} minutes (this "
+                          f"version: {minutes}): click \"Install and start monitoring\" to update it"))]
+    return [(WARN, tr("監控被結束時不會自動重新啟動：按「安裝並開始監控」修正",
+                      "If monitoring is ended, it isn't started again: click \"Install and start monitoring\" to fix "
+                      "it"))]
+
+
 def check_monitor_log(lines):
     """The last monitor start in the log: its version, and whether the process monitor started after it."""
     start = last_start(lines)  # (test-mode starts don't match: their line reads "開始監控（測試模式）：")
@@ -226,6 +245,7 @@ def run_selfcheck(report) -> list:
 
     lines = _log_lines()
     step(check_task)
+    step(check_restart_trigger)
     step(check_monitor_log, lines)
     step(check_canary_files)
     step(check_state_permissions)

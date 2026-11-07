@@ -30,6 +30,20 @@ class SelfCheckTests(TempDirTest):
                     mock.patch.object(rg, "stopped_by_user", lambda: stopped):
                 self.assertEqual(rg.check_task()[0], expected, (state, stopped))
 
+    def test_the_restart_trigger(self):
+        for state, stopped, interval, expected in (("Running", False, "PT1M", ["ok"]), ("Running", False, "PT5M", ["warn"]),
+                                                   ("Running", False, "", ["warn"]), ("", False, "", []),
+                                                   ("Ready", True, "", [])):  # stopped by the user: not a problem
+            with mock.patch.object(rg, "task_state", lambda: state), \
+                    mock.patch.object(rg, "stopped_by_user", lambda: stopped), \
+                    mock.patch.object(rg, "restart_interval", lambda: interval):
+                self.assertEqual([r for r, _ in rg.check_restart_trigger()], expected, (state, stopped, interval))
+        with mock.patch.object(rg, "task_state", lambda: "Running"), mock.patch.object(rg, "stopped_by_user", lambda: False):
+            with mock.patch.object(rg, "restart_interval", lambda: "PT5M"):
+                self.assertIn("only within 5 minutes", rg.check_restart_trigger()[0][1])
+            with mock.patch.object(rg, "restart_interval", lambda: ""):
+                self.assertIn("isn't started again", rg.check_restart_trigger()[0][1])
+
     def test_the_monitor_in_the_log(self):
         procmon = "2026-11-07 10:00:01,000 [INFO] Process monitor started (real-time trace: {})"
         ok = rg.check_monitor_log([self.start_line(), procmon.format("True")])
@@ -121,7 +135,7 @@ class SelfCheckTests(TempDirTest):
 
     def test_the_summary(self):
         lines = []
-        for name, value in (("check_task", lambda: ("fail", "not installed")),
+        for name, value in (("check_task", lambda: ("fail", "not installed")), ("check_restart_trigger", lambda: []),
                             ("check_monitor_log", lambda lines: [("warn", "older"), ("ok", "procmon")]),
                             ("check_canary_files", lambda: 1 / 0),  # a check that breaks is reported, the rest go on
                             ("check_state_permissions", lambda: ("ok", "safe")),

@@ -21,11 +21,13 @@ class MonitorLoopTests(TempDirTest):
         self.watch = self.dir / "watch"
         self.watch.mkdir()
         self.triggered = []
+        self.restart_trigger_kept = []
         StubProcessMonitor.instances = []
         for name, value in (("app_dir", lambda: self.dir), ("IS_WINDOWS", True), ("FROZEN", False),
                             ("is_admin", lambda: True), ("single_instance", lambda: True),
                             ("exit_with_launcher", lambda: None), ("cleanup_old_files", lambda: None),
                             ("ProcessMonitor", StubProcessMonitor), ("DEFENDER_SCAN_DOWNLOADS", False),
+                            ("keep_restart_trigger", lambda: self.restart_trigger_kept.append(1)),
                             ("CHECK_INTERVAL", 0),
                             ("respond", lambda reason, dry_run, files=(): self.triggered.append((reason, dry_run, files)))):
             p = mock.patch.object(rg, name, value)
@@ -205,10 +207,43 @@ class MonitorLoopTests(TempDirTest):
         self.assertTrue(any("paused by the user until" in m for m in logged.output), logged.output)
         self.assertTrue(any("File detection resumed" in m for m in logged.output), logged.output)
 
+    def test_the_monitor_puts_the_restart_trigger_back_when_it_starts(self):
+        self.start()
+        self.wait_for(lambda: self.restart_trigger_kept)
+        self.assertEqual(self.restart_trigger_kept, [1])
+
+    def test_the_restart_trigger_is_put_back_or_brought_to_one_minute(self):
+        for interval, changed in (("PT1M", False), ("PT5M", True), ("", True)):  # current / older install / taken off
+            cmds = []
+
+            def ps(cmd, interval=interval, cmds=cmds):
+                cmds.append(cmd)
+                return (0, interval, "") if "Repetition.Interval" in cmd else (0, "", "")
+            with mock.patch.object(rg, "_ps", ps):
+                rg.ensure_restart_trigger()
+            sets = [c for c in cmds if "Set-ScheduledTask" in c]
+            self.assertEqual(len(sets), 1 if changed else 0, interval)
+            if changed:
+                self.assertIn(f"-RepetitionInterval (New-TimeSpan -Minutes {rg.MONITOR_RESTART_MINUTES})", sets[0])
+                self.assertIn("$r.Repetition.StopAtDurationEnd = $false", sets[0])
+                self.assertIn("MSFT_TaskLogonTrigger", sets[0], "the sign-in trigger is kept")
+        self.assertEqual(rg.MONITOR_RESTART_MINUTES, 1)
+        with mock.patch.object(rg, "_ps", lambda c: (1, "", "no such task")):  # never fails the monitor
+            rg.keep_restart_trigger()
+        with mock.patch.object(rg, "_ps", mock.Mock(side_effect=OSError("powershell missing"))):
+            rg.keep_restart_trigger()
+
     def test_a_stop_by_the_user_holds_until_windows_restarts(self):
-        with mock.patch.object(rg, "stop_monitor", lambda: None), mock.patch.object(rg, "boot_time", lambda: 1000.0):
+        cmds = []
+        with mock.patch.object(rg, "stop_monitor", lambda: None), mock.patch.object(rg, "boot_time", lambda: 1000.0), \
+                mock.patch.object(rg, "_ps", lambda c: cmds.append(c) or (0, "", "")):
             rg.stop_monitor_until_restart()
             self.assertTrue(rg.stopped_by_user())
+            # the task stops starting it every minute until then (each start would unpack the program to exit again)
+            self.assertEqual(len(cmds), 1)
+            self.assertIn("Set-ScheduledTask", cmds[0])
+            self.assertIn("MSFT_TaskLogonTrigger", cmds[0], "the sign-in trigger is kept")
+            self.assertNotIn("RepetitionInterval", cmds[0])
             with self.assertRaises(SystemExit) as e:  # the task's next start finds it and leaves at once
                 self.run_once()
             self.assertEqual(e.exception.code, 0)

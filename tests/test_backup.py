@@ -99,7 +99,8 @@ class BackupTests(TempDirTest):
         for name, value in (("IS_WINDOWS", True), ("FROZEN", False), ("is_admin", lambda: True),
                             ("single_instance", lambda: True), ("exit_with_launcher", lambda: None),
                             ("cleanup_old_files", lambda: None), ("ProcessMonitor", StubProcessMonitor),
-                            ("DEFENDER_SCAN_DOWNLOADS", False), ("CHECK_INTERVAL", 0), ("BACKUP_CHECK_DELAY", 1)):
+                            ("DEFENDER_SCAN_DOWNLOADS", False), ("CHECK_INTERVAL", 0), ("BACKUP_CHECK_DELAY", 1),
+                            ("keep_restart_trigger", lambda: None)):
             self.patch(name, value)
         watch = self.dir / "watch"
         watch.mkdir()

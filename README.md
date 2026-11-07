@@ -152,7 +152,7 @@ RansomGuard.exe asks for administrator rights (User Account Control) when it sta
 | `C:\Program Files\RansomGuard\` | `RansomGuard.exe`, `icon.ico`, `health_check.js` |
 | `%TEMP%` | A `_MEI…` folder the exe unpacks itself into while it runs, removed when it exits. `MpCmdRun.log`, the log Microsoft Defender's scanner keeps of the scans RansomGuard asks for |
 | Desktop | The "RansomGuard" shortcut |
-| Task Scheduler | The scheduled tasks "RansomGuard" and "RansomGuard Health Check" |
+| Task Scheduler | The scheduled tasks "RansomGuard" (at sign-in, and every minute if monitoring isn't running; that repeating trigger is taken off while you have stopped monitoring until restart, and put back when it starts) and "RansomGuard Health Check" |
 | Windows' icon cache | Refreshed when installing, so the shortcut shows the current icon |
 
 ### What it deletes
@@ -247,7 +247,7 @@ Keep using antivirus software (such as Microsoft Defender), install Windows upda
 - Ransomware that encrypts slowly enough to stay under these thresholds is caught only if it touches a canary file. So is ransomware that keeps each file's name and encrypts only the middle of photos and videos, leaving their start intact (for Office files, zip archives, PDFs and text files the end is checked too).
 - Ransomware that deletes restore points through Windows programming interfaces, instead of running commands such as `vssadmin`, is not caught by the dangerous-command check.
 - Programs that write through memory-mapped files don't show up in the write counts, so they may not be found to be paused.
-- Ransomware that already has administrator rights can stop RansomGuard. The scheduled task starts it again within 5 minutes; if the ransomware deletes the task too, the health check tells you within a day.
+- Ransomware that already has administrator rights can stop RansomGuard. The scheduled task starts it again within a minute; if the ransomware deletes the task too, the health check tells you within a day.
 - After it triggers, it doesn't trigger a second time until you restore the network, but it keeps stopping dangerous commands and pausing the programs behind them.
 - It has been tested with automated tests and simulated ransomware (a test script using 11 techniques, from encrypting and renaming to partial and intermittent encryption and encrypted copies), alongside 11 kinds of everyday work that must not trigger it, never with real ransomware.
 - Windows 10 and 11 only, and it needs administrator rights.

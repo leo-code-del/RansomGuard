@@ -49,10 +49,45 @@ def stop_monitor():
     log.info(tr("已停止背景監控", "Background monitoring stopped"))
 
 
-# The scheduled task also starts the monitor every few minutes when it isn't running (ransomware with
-# administrator rights often ends security programs first), so a stop the user asked for is written down,
-# in the folder only administrators can change, and holds until Windows restarts.
-MONITOR_RESTART_MINUTES = 5
+# The scheduled task also starts the monitor every minute when it isn't running (ransomware with administrator
+# rights often ends security programs first); while it runs, Task Scheduler starts no second one. A stop the user
+# asked for is written down, in the folder only administrators can change, and holds until Windows restarts; the
+# repeating trigger is taken off meanwhile, since each start would unpack the program (12 MB) just to exit again.
+# The monitor puts it back when it starts.
+MONITOR_RESTART_MINUTES = 1
+
+
+def _set_restart_trigger(on: bool) -> bool:
+    """Keep the task's sign-in trigger, and add (on) or drop the one that starts the monitor again every
+    MONITOR_RESTART_MINUTES. Returns whether it worked."""
+    task = winapi._ps_quote(config.TASK_NAME)
+    add = ("$r = New-ScheduledTaskTrigger -Once -At (Get-Date) "
+           f"-RepetitionInterval (New-TimeSpan -Minutes {MONITOR_RESTART_MINUTES}); "
+           "$r.Repetition.StopAtDurationEnd = $false; $keep += $r; ") if on else ""
+    rc, _, err = winapi._ps(
+        f"$t = Get-ScheduledTask -TaskName {task} -ErrorAction Stop; "
+        "$keep = @($t.Triggers | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' }); "
+        f"{add}Set-ScheduledTask -TaskName {task} -Trigger $keep -ErrorAction Stop | Out-Null")
+    if rc != 0:
+        log.warning(tr("無法調整排程工作的自動重啟設定：%s", "Could not change the scheduled task's restart trigger: %s"),
+                    err[:200])
+    return rc == 0
+
+
+def restart_interval() -> str:
+    """How often the scheduled task starts a monitor that isn't running, as Task Scheduler says it ("PT1M");
+    "" if it doesn't (no repeating trigger, or no task)."""
+    rc, out, _ = winapi._ps(f"@((Get-ScheduledTask -TaskName {winapi._ps_quote(config.TASK_NAME)} -ErrorAction Stop)"
+                            ".Triggers | ForEach-Object { $_.Repetition.Interval } | Where-Object { $_ })[0]")
+    return out.strip() if rc == 0 else ""
+
+
+def ensure_restart_trigger():
+    """When the monitor starts: put the repeating trigger back after a stop until restart, or bring an older
+    install's interval (5 minutes) to MONITOR_RESTART_MINUTES."""
+    if restart_interval() != f"PT{MONITOR_RESTART_MINUTES}M" and _set_restart_trigger(True):
+        log.info(tr("排程工作會在監控被結束後 %d 分鐘內重新啟動它", "The scheduled task starts the monitor again within "
+                    "%d minute(s) if it is ended"), MONITOR_RESTART_MINUTES)
 
 
 def stop_monitor_until_restart():
@@ -60,6 +95,7 @@ def stop_monitor_until_restart():
     d = storage.state_dir()
     d.mkdir(parents=True, exist_ok=True)
     (d / "monitor_stopped").write_text(str(winapi.boot_time()), encoding="utf-8")
+    _set_restart_trigger(False)  # written down first: the stop holds even if this fails
     stop_monitor()
 
 
@@ -290,7 +326,7 @@ def _install(report, update=True) -> bool:
         f"$a = New-ScheduledTaskAction -Execute {winapi._ps_quote(exe)} "
         f"-Argument {winapi._ps_quote((args + ' --monitor').strip())} -WorkingDirectory {winapi._ps_quote(workdir)}; "
         "$t = New-ScheduledTaskTrigger -AtLogOn -User $u; "
-        # also every few minutes: starts the monitor again if something ended it (MultipleInstances IgnoreNew
+        # also every minute: starts the monitor again if something ended it (MultipleInstances IgnoreNew
         # leaves a running monitor alone); the repetition never expires
         "$t2 = New-ScheduledTaskTrigger -Once -At (Get-Date) "
         f"-RepetitionInterval (New-TimeSpan -Minutes {MONITOR_RESTART_MINUTES}); "

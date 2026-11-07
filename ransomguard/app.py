@@ -16,6 +16,15 @@ REWATCH_INTERVAL = 60
 BACKUP_CHECK_DELAY = 600
 
 
+def keep_restart_trigger():
+    """A stop until restart took the scheduled task's repeating trigger away (and older installs start the monitor
+    again every 5 minutes): put it back as it should be. Never stops the monitor."""
+    try:
+        install.ensure_restart_trigger()
+    except Exception:
+        log.exception(tr("無法確認排程工作的自動重啟設定", "Could not check the scheduled task's restart trigger"))
+
+
 def run(args, stop=None):
     """The monitor. stop: an Event that ends it (tests); it otherwise runs until Windows ends it."""
     winapi.exit_with_launcher()
@@ -40,16 +49,18 @@ def run(args, stop=None):
         sys.exit(0)
     if not args.dry_run:
         storage.secure_state_dir()
-        if install.stopped_by_user():  # the task's every-few-minutes trigger must not undo "Stop monitoring"
+        if install.stopped_by_user():  # the task's every-minute trigger must not undo "Stop monitoring"
             log.info(tr("使用者已停止監控，重新開機前不會自動啟動", "Monitoring was stopped by the user; "
                         "it doesn't start by itself until Windows restarts"))
             sys.exit(0)
         canary.remove_legacy_canaries()  # safe now: no other monitor is watching the old canary files
         install.cleanup_old_files()
+        if config.IS_WINDOWS:  # in the background: it asks Task Scheduler, which takes a moment
+            threading.Thread(target=keep_restart_trigger, daemon=True).start()
 
     st = storage.load_state()
     if st.get("triggered_at") and not args.dry_run and abs(st.get("reminded", 0) - winapi.boot_time()) > 120:
-        # once per Windows start: the task may start the monitor again every few minutes
+        # once per Windows start: the task may start the monitor again every minute
         st["reminded"] = winapi.boot_time()
         storage.save_state(st)
         why = "\n".join(storage.incident_lines(st, limit=3))
