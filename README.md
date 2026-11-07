@@ -57,7 +57,7 @@ Any one of these triggers it:
 | **Ransom notes** | Files such as `HOW_TO_DECRYPT.txt` appear in several folders within a short time |
 | **Dangerous commands** | A program deletes restore points, disables boot recovery, deletes backups, clears event logs or turns off Defender. The command is ended immediately and the program that started it is paused, because ransomware usually does this just before it starts encrypting |
 
-**Watched folders:** Desktop, Documents, Pictures, Downloads, Videos, Music, plus any folder you add with **Watched folders…** at the bottom of the control panel (another drive, a USB drive, a NAS). A USB drive or NAS that isn't connected is watched as soon as it is (within a minute). System folders and the whole system drive can't be added: they change all the time.
+**Watched folders:** Desktop, Documents, Pictures, Downloads, Videos, Music, plus any folder you add with **Watched folders…** under **Settings** in the control panel (another drive, a USB drive, a NAS). A USB drive or NAS that isn't connected is watched as soon as it is (within a minute). System folders and the whole system drive can't be added: they change all the time.
 
 **Downloads are checked too:** new programs, scripts and archives (`.exe`, `.msi`, `.js`, `.zip`...) in Downloads or directly on the Desktop are scanned with Microsoft Defender once they finish downloading. If Defender finds a threat, a message tells you. This doesn't cut the network, because Defender removes the file.
 
@@ -82,25 +82,25 @@ Any one of these triggers it:
 
 ## Control panel
 
-The buttons are in two groups. Rest the mouse on a button to see what it does. Only the button you need right now is colored: **Install and start monitoring** when monitoring isn't running, **Restore network** while the network is cut, and the update button when a newer version is known.
+The home page shows one thing: whether this computer is protected (**Protected**, **Network cut off**, **Detection paused**, **Not protected** or **Not installed**), with the one button you need now, such as **Restore network and restart monitoring** while the network is cut or **Self-check** when everything is fine. Under it, **Protection**, **Backup**, **Tools** and **Settings** each open their page, where every button says what it does; **‹ Back** returns.
 
 | | Button | What it does |
 | --- | --- | --- |
 | **Protection** | **Install and start monitoring** | Installs background monitoring with the version that is running and starts it, without contacting GitHub |
-| | **Pause or stop monitoring** | **Pause file detection** for 30 minutes or 2 hours before bulk work (converting, renaming or encrypting many files on purpose): files that look encrypted, unknown extensions, ransom notes and encrypted copies aren't counted, while canary files and dangerous commands are still watched. It resumes by itself; the status card shows until when. Or **stop monitoring** until you click **Install and start monitoring** or restart Windows |
+| | **Pause or stop monitoring** | **Pause file detection** for 30 minutes or 2 hours before bulk work (converting, renaming or encrypting many files on purpose): files that look encrypted, unknown extensions, ransom notes and encrypted copies aren't counted, while canary files and dangerous commands are still watched. It resumes by itself; the home page shows until when. Or **stop monitoring** until you click **Install and start monitoring** or restart Windows |
 | | **Restore network and restart monitoring** | Restores the network after a false alarm. While the network is cut, the control panel shows the detection report (why it triggered, which files looked encrypted, which programs were paused), and so does this button before it asks, so you can tell a false alarm from a real attack |
+| **Backup** | The home page's **Backup** | RansomGuard can't bring encrypted files back; only a backup can. This row shows whether File History or OneDrive backs up your files; clicking it shows when File History last did, explains how to set one up and opens Windows' settings. Without an up-to-date backup the background monitor reminds you, at most every 14 days; tick "I back up with another program" to stop that |
 | **Tools** | **Self-check** | Makes sure protection really works: background monitoring and the process monitor are running, in the control panel's version; the canary files are intact and hidden; only administrators can change the state folder; no errors since monitoring started; the network and backup state. Then a drill in a temporary folder (simulated encryption of 12 documents and a changed canary file, in test mode: no network cut, no warning) shows how fast detection reacts. Takes about 10 seconds, changes nothing |
 | | **Check for updates** | Asks GitHub whether there is a newer version and tells you; if there is, asks whether to update |
 | | **Preview warning** | Shows what the warning looks like, without cutting the network |
 | | **Open log** | Opens `%LOCALAPPDATA%\RansomGuard\guard.log` (entries older than 30 days are removed) |
 | | **Clear log** | Empties the log, which lists the files and programs that were detected |
-| **Bottom** | **Check for updates automatically** | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
-| | **Watched folders…** | Adds or removes folders watched besides the default ones. Saving restarts background monitoring |
-| | **Backup…** | RansomGuard can't bring encrypted files back; only a backup can. The **Backup** row shows whether File History or OneDrive backs up your files and when File History last did, and this button explains how to set one up and opens Windows' settings. Without an up-to-date backup the background monitor reminds you, at most every 14 days; tick "I back up with another program" to stop that |
+| **Settings** | **Watched folders…** | Adds or removes folders watched besides the default ones. Saving restarts background monitoring |
+| | **Check for updates automatically** | Off by default. When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel opens |
 | | **Uninstall** | Removes background monitoring, the health check, the desktop shortcut, the canary files, the `C:\Program Files\RansomGuard` folder, the log and settings and the state data |
 | **Top right** | **English / 中文(繁體)** | Switches the interface language |
 
-The **Progress** box shows what the button you clicked is doing. The first time you open the control panel, you choose the language; the background monitor's warnings use the same language.
+The **Progress** box, at the bottom of every page, shows what the button you clicked is doing and its results. The first time you open the control panel, you choose the language; the background monitor's warnings use the same language.
 
 <details>
 <summary><b>Command-line options</b></summary>

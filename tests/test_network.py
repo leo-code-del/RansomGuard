@@ -164,6 +164,24 @@ class StatusAndOfflineTests(TempDirTest):
         self.assertEqual((text, light), ("Detection paused", "paused"))
         self.assertIn("canary files are still watched", note)
 
+    def test_the_home_page_shows_one_status_and_what_to_do(self):
+        rg.init_lang("en")
+        running, normal = ("Running", "ok", ""), ("Normal", "ok", "")
+        cut = ("Cut off", "bad", "Suspicious activity detected at 2026-11-07 10:00:00")
+        cases = {
+            (running, normal): ("Protected", "ok", "selfcheck"),
+            (running, cut): ("Network cut off", "bad", "restore"),
+            (("Not installed", "off", ""), cut): ("Network cut off", "bad", "restore"),  # a cut network comes first
+            (("Not installed", "off", ""), normal): ("Not installed", "off", "install"),
+            (("Stopped", "warn", ""), normal): ("Not protected", "warn", "install"),
+            (("Detection paused", "paused", "Resumes at 11:00"), normal): ("Detection paused", "paused", "resume"),
+        }
+        for info, (title, light, todo) in cases.items():
+            got = rg.home_status(info)
+            self.assertEqual((got[0], got[1], got[3]), (title, light, todo), info)
+        self.assertEqual(rg.home_status((running, cut))[2], cut[2], "says when it was cut")
+        self.assertIn("Stopped", rg.home_status((("Stopped", "warn", ""), normal))[2])
+
     def test_network_turned_back_on_is_cut_again_while_the_warning_is_open(self):
         polls = iter([None, None, None, 0, 0])  # the warning closes after two checks
         cut = []

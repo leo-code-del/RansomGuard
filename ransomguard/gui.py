@@ -13,7 +13,7 @@ from .winapi import norm
 
 
 def status_info():
-    """The control panel's two status cards: ((text, light, note), (text, light, note));
+    """Background monitoring and the network, for the control panel: ((text, light, note), (text, light, note));
     light is ok / paused (running, file detection paused) / warn / bad / off."""
     s = install.task_state()
     unprotected = tr("目前沒有勒索病毒防護", "No ransomware protection right now")
@@ -39,6 +39,26 @@ def status_info():
     else:
         net = (tr("正常", "Normal"), "ok", tr("連線沒有被限制", "The connection is not restricted"))
     return mon, net
+
+
+def home_status(info):
+    """The control panel home page's one status, from status_info(): (title, light, note, what to do), what to do
+    being restore / install / resume / selfcheck. A cut network comes first, then whether it is protected."""
+    (mon_text, mon_light, mon_note), (_, net_light, net_note) = info
+    if net_light == "bad":
+        return tr("網路已切斷", "Network cut off"), "bad", net_note, "restore"
+    if mon_light == "off":
+        return (tr("尚未安裝", "Not installed"), "off",
+                tr("安裝後就會在背景保護這台電腦。", "Install it to protect this computer in the background."), "install")
+    if mon_light == "warn":
+        return (tr("沒有防護", "Not protected"), "warn",
+                tr(f"背景監控{mon_text}，這台電腦目前沒有勒索病毒防護。",
+                   f"Background monitoring: {mon_text}. This computer has no ransomware protection right now."), "install")
+    if mon_light == "paused":
+        return mon_text, "paused", mon_note, "resume"
+    return (tr("已受到保護", "Protected"), "ok",
+            tr("背景監控執行中，每次登入 Windows 都會自動啟動；網路正常。",
+               "Background monitoring is running and starts every time you sign in; the network is normal."), "selfcheck")
 
 
 def icon_file() -> str:
@@ -124,9 +144,10 @@ def gui(auto_update=False):
 
     q = queue.Queue()
     buttons = []
-    w = {}  # widgets on screen now; the whole window is rebuilt when the language changes
+    w = {"page": "home", "lines": []}  # the window's state; it is rebuilt when the language changes
+    pw = {}  # widgets of the page on screen now (home, protection, tools or settings)
 
-    def make_button(parent, text, cmd, name, tip_text=None, track=True):
+    def make_button(parent, text, cmd, name, track=True):
         """track: disable it while an action runs (not for buttons of a dialog, which may be gone by then)."""
         rim = tk.Frame(parent)  # 1px border (a tk button's own border can only be black on Windows)
         b = tk.Button(rim, text=text, command=cmd, font=(w["font"], 11), relief="flat", bd=0,
@@ -134,6 +155,8 @@ def gui(auto_update=False):
         b.pack(fill="both", padx=1, pady=1)
         if track:
             buttons.append(b)
+            if w.get("working"):  # a page opened while an action runs
+                b.config(state="disabled")
 
         # bound once and reading the current style, so restyling (show_status) doesn't stack handlers
         def enter(_):
@@ -144,8 +167,6 @@ def gui(auto_update=False):
         b.bind("<Enter>", enter, add="+")
         b.bind("<Leave>", lambda _: style(b, b.rg_style), add="+")
         style(b, name)
-        if tip_text:
-            tip(b, tip_text)
         return rim, b
 
     def style(b, name):
@@ -154,45 +175,42 @@ def gui(auto_update=False):
         b.master.config(bg=C["border"] if name == "secondary" else bg)
         b.config(bg=bg, fg=fg, activebackground=hover, activeforeground=fg, disabledforeground=dim)
 
-    def tip(widget, text):
-        """A short description shown while the mouse rests on a widget."""
-        state = {}
+    def on_install():
+        run_bg(lambda rep: install.install(rep, update=False))
 
-        def show():
-            state.pop("job", None)
-            win = state["win"] = tk.Toplevel(root)
-            win.wm_overrideredirect(True)
-            win.wm_attributes("-topmost", True)
-            tk.Label(win, text=text, font=(w["font"], 9), bg="#1f2937", fg="#f9fafb", justify="left",
-                     wraplength=px(380), padx=px(9), pady=px(6)).pack()
-            win.update_idletasks()
-            x = min(widget.winfo_rootx() + px(10), widget.winfo_screenwidth() - win.winfo_width() - px(8))
-            win.wm_geometry(f"+{x}+{widget.winfo_rooty() + widget.winfo_height() + px(4)}")
+    def on_selfcheck():
+        run_bg(selftest.run_selfcheck)
 
-        def hide(_=None):
-            if "job" in state:
-                root.after_cancel(state.pop("job"))
-            if "win" in state:
-                state.pop("win").destroy()
+    def resume_now():
+        storage.resume_detection()
+        write(tr("檔案偵測已恢復。", "File detection resumed."))
+        refresh()
 
-        def enter(_):
-            if "job" not in state and "win" not in state:
-                state["job"] = root.after(600, show)
-        widget.bind("<Enter>", enter, add="+")
-        widget.bind("<Leave>", hide, add="+")
-        widget.bind("<ButtonPress>", hide, add="+")
+    # what home_status() suggests: (command, button style); on_restore is defined further down
+    actions = {"restore": (lambda: on_restore(), "success"), "install": (on_install, "primary"),
+               "resume": (resume_now, "secondary"), "selfcheck": (on_selfcheck, "secondary")}
 
     def show_status(info):
-        for (dot, val, detail), (text, level, note) in zip((w["mon"], w["net"]), info):
-            dot.config(fg=C[level])
-            val.config(text=text, fg=C["bad"] if level == "bad" else C["text"])
-            detail.config(text=note or " ")
-        # color only what needs the user now: restoring a cut network, starting monitoring that isn't running,
-        # a newer version; when everything is fine no button stands out
+        w["status"] = info  # kept, so a page opened later shows it at once
+        if "hero" in pw:
+            dot, title, note, action = pw["hero"]
+            text, light, detail, todo = home_status(info)
+            cmd, name = actions[todo]
+            label = {"restore": tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"),
+                     "install": tr("安裝並開始監控", "Install and start monitoring"),
+                     "resume": tr("立即恢復偵測", "Resume detection now"),
+                     "selfcheck": tr("自我檢查", "Self-check")}[todo]
+            dot.config(fg=C[light])
+            title.config(text=text, fg=C["bad"] if light == "bad" else C["text"])
+            note.config(text=nb(detail))
+            action.config(text=label, command=cmd, state="disabled" if w.get("working") else "normal")
+            style(action, name)
+        # on the protection page, color only what needs the user now
         cut, running = info[1][1] == "bad", info[0][1] in ("ok", "paused")
-        style(w["install"], "primary" if not cut and not running else "secondary")
-        style(w["update"], "primary" if w.get("new") and not cut else "secondary")
-        style(w["restore"], "success" if cut else "secondary")
+        if "install" in pw:
+            style(pw["install"], "primary" if not cut and not running else "secondary")
+        if "restore" in pw:
+            style(pw["restore"], "success" if cut else "secondary")
 
     def update_label():
         new = w.get("new")
@@ -201,8 +219,7 @@ def gui(auto_update=False):
     def offer_update(new):
         """A newer version is known (found by the automatic check or the button): name it, then ask."""
         w["new"] = new
-        w["update"].config(text=update_label())
-        style(w["update"], "primary")
+        show_page(w["page"])  # the home page's Tools row and the Update button name it
         if messagebox.askyesno("RansomGuard", tr(
                 f"有新版本 v{new}（目前是 v{config.VERSION}）。\n\n要現在更新嗎？\n"
                 "選「否」會繼續用目前的版本監控，之後隨時可以再按「檢查版本更新」。",
@@ -212,11 +229,37 @@ def gui(auto_update=False):
             run_bg(install.install)
 
     def write(msg, tag=None):
-        out = w["out"]
-        out.config(state="normal")
-        out.insert("end", msg + "\n", tag)
-        out.see("end")
-        out.config(state="disabled")
+        """Add a line to the progress area (kept, so it survives switching pages and the language)."""
+        w["lines"].append((msg, tag))
+        w["intro"] = False
+        out = w.get("out")
+        if out is not None and out.winfo_exists():
+            out.config(state="normal")
+            out.insert("end", msg + "\n", tag)
+            out.see("end")
+            out.config(state="disabled")
+
+    def clear_progress():
+        w["lines"] = []
+        out = w.get("out")
+        if out is not None and out.winfo_exists():
+            out.config(state="normal")
+            out.delete("1.0", "end")
+            out.config(state="disabled")
+
+    def intro():
+        """What the progress area says before any action: the detection report while the network is cut, else a
+        hint. Written again in the new language when it is switched."""
+        clear_progress()
+        report_lines = storage.incident_lines(storage.load_state())
+        if report_lines:  # say why, so the user can tell a false alarm from a real attack
+            write(tr("偵測報告", "Detection report"), "err")
+            for line in report_lines:
+                write(line)
+            w["out"].see("1.0")  # from the top: why it triggered comes first
+        else:
+            write(tr("操作的進度和結果會顯示在這裡。", "The progress and results of what you do show here."), "hint")
+        w["intro"] = True
 
     def report(msg):
         q.put(("msg", msg))
@@ -228,20 +271,20 @@ def gui(auto_update=False):
         threading.Thread(target=work, daemon=True).start()
 
     def show_backup(info):
-        text, level, note = info
-        dot, val, detail = w["backup"]
-        dot.config(fg=C[level])
-        val.config(text=text, fg=C["bad"] if level == "bad" else C["text"])
-        detail.config(text=note)
+        w["backup"] = info
+        if "backup" in pw:
+            text, level, _ = info
+            dot, val = pw["backup"]
+            dot.config(fg=C[level])
+            val.config(text=text, fg=C["bad"] if level == "bad" else C["text"])
 
     def run_bg(fn):
         for b in buttons:
-            b.config(state="disabled")
+            if b.winfo_exists():
+                b.config(state="disabled")
         w["busy"].config(text=tr("執行中...", "Working..."))
         w["working"] = True
-        w["out"].config(state="normal")
-        w["out"].delete("1.0", "end")
-        w["out"].config(state="disabled")
+        clear_progress()
 
         def work():
             try:
@@ -265,12 +308,13 @@ def gui(auto_update=False):
                 elif kind == "update":  # the automatic check found a newer version when the window opened
                     if msg and not w.get("working"):
                         offer_update(msg)
-                    elif msg:  # busy now: just name it on the button
+                    elif msg:  # busy now: just name it
                         w["new"] = msg
-                        w["update"].config(text=update_label())
+                        show_page(w["page"])
                 else:
                     for b in buttons:
-                        b.config(state="normal")
+                        if b.winfo_exists():  # (a page closed meanwhile takes its buttons with it)
+                            b.config(state="normal")
                     w["busy"].config(text="")
                     w["working"] = False
                     if install.UPDATED_TO:  # reopen the control panel from the newly installed version
@@ -620,20 +664,24 @@ def gui(auto_update=False):
                  font=("Microsoft JhengHei UI", 9), fg=C["muted"], bg=C["bg"],
                  justify="left").pack(anchor="w", pady=(px(4), 0))
 
+    PAGES = ("home", "protection", "tools", "settings")
+
     def show_panel():
-        """Show the control panel at one fixed size that fits both languages (English text is wider),
-        so switching the language doesn't resize the window or move anything in it."""
+        """Show the control panel at one fixed size that fits every page in both languages (English text is
+        wider), so switching the page or the language doesn't resize the window."""
         chosen, sizes = config.LANG, []
         root.withdraw()
         for lang in ("en", "zh"):
             config.LANG = lang
             build()
-            root.update_idletasks()
-            sizes.append((root.winfo_reqwidth(), root.winfo_reqheight()))
+            for page in PAGES:
+                show_page(page)
+                root.update_idletasks()
+                sizes.append((root.winfo_reqwidth(), root.winfo_reqheight()))
         config.LANG = chosen
+        w["page"] = "home"
         build()
-        # the progress area is two lines, so the window fits a 768-pixel laptop screen; a taller screen gives it a
-        # few more lines (the self-check reports a dozen)
+        # a taller screen gives the progress area a few more lines (the self-check reports a dozen)
         height = max(s[1] for s in sizes)
         height += max(0, min(px(100), work_area_height() - px(50) - height))  # (50: title bar and frame)
         root.geometry(f"{max(s[0] for s in sizes)}x{height}")
@@ -647,9 +695,11 @@ def gui(auto_update=False):
             threading.Thread(target=lambda: q.put(("update", updates.check_for_update())), daemon=True).start()
 
     def build():
+        """The whole window: header, the current page, and the progress area under it."""
         if "frame" in w:
             w["frame"].destroy()
         buttons.clear()
+        pw.clear()
         # one font for both languages (JhengHei has its own Latin letters): with the same line heights
         # every row stays exactly where it is when the language is switched
         w["font"] = FONT = "Microsoft JhengHei UI"
@@ -657,7 +707,6 @@ def gui(auto_update=False):
         w["frame"] = frame = tk.Frame(root, bg=C["bg"])
         frame.pack(fill="both", expand=True)
 
-        # header
         hdr = tk.Frame(frame, bg=C["header"])
         hdr.pack(fill="x")
         top = tk.Frame(hdr, bg=C["header"])
@@ -675,150 +724,195 @@ def gui(auto_update=False):
                  font=(FONT, 10), fg="#cbd5e1", bg=C["header"]).pack(anchor="w", padx=px(22), pady=(px(2), px(12)))
 
         body = tk.Frame(frame, bg=C["bg"])
-        body.pack(fill="both", expand=True, padx=px(22), pady=(px(14), px(10)))
+        body.pack(fill="both", expand=True, padx=px(22), pady=(px(16), px(14)))
+        w["host"] = tk.Frame(body, bg=C["bg"])  # the page
+        w["host"].pack(fill="x")
 
-        # status cards
-        cards = tk.Frame(body, bg=C["bg"])
-        cards.pack(fill="x")
-        cards.columnconfigure((0, 1), weight=1, uniform="card")
-
-        def card(col, title):
-            f = tk.Frame(cards, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
-            f.grid(row=0, column=col, sticky="nsew", padx=(0, px(6)) if col == 0 else (px(6), 0))
-            tk.Label(f, text=title, font=(FONT, 10), fg=C["muted"],
-                     bg=C["card"]).pack(anchor="w", padx=px(16), pady=(px(10), 0))
-            row = tk.Frame(f, bg=C["card"])
-            row.pack(anchor="w", padx=px(16))
-            dot = tk.Label(row, text="●", font=(FONT, 12), fg=C["off"], bg=C["card"])
-            dot.pack(side="left")
-            val = tk.Label(row, text=tr("讀取中...", "Loading..."), font=(FONT, 15, "bold"),
-                           fg=C["text"], bg=C["card"])
-            val.pack(side="left", padx=(px(4), 0))
-            # always two lines tall, so a note that wraps in one language doesn't make the card taller
-            detail = tk.Label(f, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"], height=2,
-                              anchor="nw", justify="left", wraplength=px(200))
-            detail.pack(fill="x", padx=px(16), pady=(0, px(8)))
-            # wrap at the card's real width: a fixed width cut long notes off when the window got narrower
-            detail.bind("<Configure>", lambda e: detail.config(wraplength=max(e.width - px(2), px(80))))
-            return dot, val, detail
-
-        w["mon"] = card(0, tr("背景監控", "Background monitoring"))
-        w["net"] = card(1, tr("網路", "Network"))
-
-        # backup: what brings encrypted files back, which RansomGuard itself can't
-        brow = tk.Frame(body, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
-        brow.pack(fill="x", pady=(px(10), 0))
-        tk.Label(brow, text=tr("備份", "Backup"), font=(FONT, 10), fg=C["muted"],
-                 bg=C["card"]).pack(side="left", padx=(px(16), px(10)), pady=px(6))
-        bdot = tk.Label(brow, text="●", font=(FONT, 12), fg=C["off"], bg=C["card"])
-        bdot.pack(side="left")
-        bval = tk.Label(brow, text=tr("讀取中...", "Loading..."), font=(FONT, 11, "bold"), fg=C["text"], bg=C["card"])
-        bval.pack(side="left", padx=(px(4), px(10)))
-        rim, b = make_button(brow, tr("備份…", "Backup…"), on_backup, "secondary",
-                             tr("備份的設定方式，以及勒索病毒發作後怎麼救回檔案。", "How to set up a backup: the only way to "
-                                "bring encrypted files back."))
-        b.config(font=(FONT, 10), padx=px(10), pady=px(2))
-        rim.pack(side="right", padx=(0, px(12)))
-        # one short line (the window has a fixed size); the "Backup…" dialog says more
-        bnote = tk.Label(brow, text=" ", font=(FONT, 9), fg=C["muted"], bg=C["card"], anchor="w")
-        bnote.pack(side="left", fill="x", expand=True)
-        w["backup"] = (bdot, bval, bnote)
-
-        def section(title):
-            row = tk.Frame(body, bg=C["bg"])
-            row.pack(fill="x", pady=(px(12), px(4)))
-            tk.Label(row, text=title, font=(FONT, 10, "bold"), fg=C["muted"], bg=C["bg"]).pack(side="left")
-            return row
-
-        def grid(title, rows):
-            """A titled group of buttons, two per row; a row with one button spans both columns.
-            rows: [[(key, text, command, tooltip), ...], ...]; returns {key: button}."""
-            w["section"] = section(title)
-            g = tk.Frame(body, bg=C["bg"])
-            g.pack(fill="x")
-            g.columnconfigure((0, 1), weight=1, uniform="btn")
-            made = {}
-            for r, row in enumerate(rows):
-                for c, (key, text, cmd, hint) in enumerate(row):
-                    rim, made[key] = make_button(g, text, cmd, "secondary", hint)
-                    rim.grid(row=r, column=c, columnspan=2 if len(row) == 1 else 1, sticky="ew",
-                             pady=(0, px(6)), padx=(0, 0) if len(row) == 1 else ((0, px(4)) if c == 0 else (px(4), 0)))
-            return made
-
-        # protection: what keeps (or stops) the computer protected
-        w.update(grid(tr("防護", "Protection"), [
-            [("install", tr("安裝並開始監控", "Install and start monitoring"),
-              lambda: run_bg(lambda rep: install.install(rep, update=False)),
-              tr("用目前這個版本安裝並開始背景監控，不會連網。",
-                 "Installs background monitoring with this version and starts it. Doesn't connect to the internet.")),
-             ("stop", tr("暫停／停止監控", "Pause or stop monitoring"), on_stop,
-              tr("大量整理檔案前暫停檔案偵測 30 分鐘或 2 小時（誘餌檔照常監控），或停止監控到重新開機。",
-                 "Pauses file detection for 30 minutes or 2 hours before bulk work (canary files are still watched), "
-                 "or stops monitoring until Windows restarts."))],
-            [("restore", tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore,
-              tr("誤判時使用：重新啟用網路、恢復 Defender 確認沒問題的被暫停程式，並重新開始監控。",
-                 "After a false alarm: turns the network back on, resumes paused programs Defender finds clean "
-                 "and restarts monitoring."))]]))
-        # tools: everything else, each pair belongs together
-        w.update(grid(tr("工具", "Tools"), [
-            [("selfcheck", tr("自我檢查", "Self-check"), lambda: run_bg(selftest.run_selfcheck),
-              tr("確認防護真的在運作：背景監控、程序監控、誘餌檔、狀態資料夾、錯誤紀錄，並在暫存資料夾演練一次（不會斷網）。",
-                 "Makes sure protection really works: background and process monitoring, canary files, the state "
-                 "folder, errors, and a drill in a temporary folder (the network isn't cut)."))],
-            [("update", update_label(), lambda: run_bg(lambda rep: w.__setitem__("offer", updates.check_updates(rep))),
-              tr("連到 GitHub 檢查有沒有新版本，有的話會詢問是否更新。", "Asks GitHub whether there is a newer version and "
-                 "offers to update if there is.")),
-             ("preview", tr("預覽警告畫面", "Preview warning"), on_preview,
-              tr("顯示觸發時的全螢幕警告，不會切斷網路。", "Shows the full-screen warning, without cutting the network."))],
-            [("log", tr("開啟紀錄檔", "Open log"), on_log,
-              tr("紀錄檔記錄偵測到的檔案與程式，保留 30 天。", "The log lists detected files and programs, kept for 30 days.")),
-             ("clear", tr("清除紀錄檔", "Clear log"), on_clear_log,
-              tr("清空紀錄檔。", "Empties the log."))]]))
-
-        # progress of the action that runs (not the log file), right under the buttons; "Working..." shows next to
-        # the Tools heading (a heading of its own would make the window too tall for a laptop screen)
-        w["busy"] = tk.Label(w["section"], text="", font=(FONT, 10), fg=C["ok"], bg=C["bg"])
+        # progress of what the user does (not the log file), the same on every page; it takes up the room the page
+        # leaves in the fixed-size window
+        bar = tk.Frame(body, bg=C["bg"])
+        bar.pack(fill="x", pady=(px(14), px(4)))
+        tk.Label(bar, text=tr("執行進度", "Progress"), font=(FONT, 9, "bold"), fg=C["muted"],
+                 bg=C["bg"]).pack(side="left")
+        w["busy"] = tk.Label(bar, text=tr("執行中...", "Working...") if w.get("working") else "", font=(FONT, 9),
+                             fg=C["ok"], bg=C["bg"])
         w["busy"].pack(side="right")
         w["out"] = out = scrolledtext.ScrolledText(
-            body, width=60, height=2, font=(FONT, 10), wrap="word", relief="flat", bd=0,
+            body, width=56, height=3, font=(FONT, 10), wrap="word", relief="flat", bd=0,
             bg=C["card"], fg=C["text"], highlightthickness=1, highlightbackground=C["border"],
             highlightcolor=C["border"], padx=px(10), pady=px(8))
-        out.pack(fill="both", expand=True)  # takes up any spare room of the fixed-size window
+        out.pack(fill="both", expand=True)
         out.tag_config("hint", foreground=C["muted"])
         out.tag_config("err", foreground=C["bad"])
-        report_lines = storage.incident_lines(storage.load_state())
-        if report_lines:  # the network is cut: say why, so the user can tell a false alarm from a real attack
-            write(tr("偵測報告", "Detection report"), "err")
-            for line in report_lines:
-                write(line)
-            out.see("1.0")  # from the top: why it triggered comes first
+        if not w["lines"] or w.get("intro"):
+            intro()  # (again in the new language)
         else:
-            write(tr("按上方按鈕執行操作，進度會顯示在這裡。滑鼠停在按鈕上可以看到說明。",
-                     "Click a button above; progress is shown here. Rest the mouse on a button for what it does."),
-                  "hint")
+            lines, w["lines"] = w["lines"], []
+            for msg, tag in lines:
+                write(msg, tag)
+        show_page(w["page"])
 
-        foot = tk.Frame(body, bg=C["bg"])
-        foot.pack(fill="x", pady=(px(10), 0))
+    def show_page(name):
+        """Put a page in the window: the home page, or the details of one of its rows."""
+        w["page"] = name
+        for child in w["host"].winfo_children():
+            child.destroy()
+        pw.clear()
+        buttons[:] = [b for b in buttons if b.winfo_exists()]
+        {"home": page_home, "protection": page_protection, "tools": page_tools,
+         "settings": page_settings}[name](w["host"])
+        if "status" in w:  # what is already known shows at once
+            show_status(w["status"])
+        if "backup" in w:
+            show_backup(w["backup"])
+
+    def page_home(host):
+        """One status, the one thing to do now, and the rows that lead to everything else."""
+        F = w["font"]
+        card = tk.Frame(host, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
+        card.pack(fill="x")
+        inner = tk.Frame(card, bg=C["card"])
+        inner.pack(fill="x", padx=px(20), pady=(px(16), px(18)))
+        line = tk.Frame(inner, bg=C["card"])
+        line.pack(fill="x")
+        dot = tk.Label(line, text="●", font=(F, 15), fg=C["off"], bg=C["card"])
+        dot.pack(side="left")
+        title = tk.Label(line, text=tr("讀取中...", "Loading..."), font=(F, 17, "bold"), fg=C["text"], bg=C["card"])
+        title.pack(side="left", padx=(px(6), 0))
+        # two lines tall, so a note that wraps in one language doesn't move what is under it
+        note = tk.Label(inner, text=" ", font=(F, 10), fg=C["muted"], bg=C["card"], anchor="nw", justify="left",
+                        height=2, wraplength=px(430))
+        note.pack(fill="x", pady=(px(4), px(10)))
+        rim, action = make_button(inner, "…", lambda: None, "secondary")
+        action.config(state="disabled", padx=px(18))
+        rim.pack(anchor="w")
+        pw["hero"] = (dot, title, note, action)
+
+        menu = tk.Frame(host, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
+        menu.pack(fill="x", pady=(px(14), 0))
+        menu.columnconfigure(1, weight=1)
+        new = w.get("new")
+        rows = (
+            (tr("防護", "Protection"), tr("監控、暫停、恢復網路", "Monitoring, pause, restore network"), None,
+             lambda: show_page("protection")),
+            (tr("備份", "Backup"), tr("讀取中...", "Loading..."), "backup", on_backup),
+            (tr("工具", "Tools"), tr(f"有新版本 v{new}", f"Version {new} is available") if new else
+             tr("自我檢查、更新、紀錄檔", "Self-check, updates, log"), "new" if new else None, lambda: show_page("tools")),
+            (tr("設定", "Settings"), tr("監控的資料夾、自動更新、解除安裝", "Watched folders, automatic updates, uninstall"),
+             None, lambda: show_page("settings")))
+        for i, (name, summary, kind, open_it) in enumerate(rows):
+            if i:
+                tk.Frame(menu, bg=C["border"], height=1).grid(row=2 * i - 1, column=0, columnspan=3, sticky="ew",
+                                                              padx=px(16))
+            menu_row(menu, 2 * i, name, summary, kind, open_it)
+
+    def menu_row(menu, r, name, summary, kind, open_it):
+        """A row of the home page: name, a short summary, ›. The whole row opens it."""
+        F, hover = w["font"], "#f5f7fb"
+        cells = [tk.Label(menu, text=name, font=(F, 11, "bold"), fg=C["text"], bg=C["card"], anchor="w")]
+        cells[0].grid(row=r, column=0, sticky="nsew", padx=(px(18), px(12)), ipady=px(11))
+        mid = tk.Frame(menu, bg=C["card"])
+        mid.grid(row=r, column=1, sticky="nsew")
+        cells.append(mid)
+        if kind == "backup":  # its state, with a light
+            dot = tk.Label(mid, text="●", font=(F, 10), fg=C["off"], bg=C["card"])
+            dot.pack(side="left")
+            cells.append(dot)
+        text = tk.Label(mid, text=summary, font=(F, 10), bg=C["card"], fg="#2563eb" if kind == "new" else C["muted"])
+        text.pack(side="left", padx=(px(4), 0) if kind == "backup" else 0, pady=px(11))
+        cells.append(text)
+        if kind == "backup":
+            pw["backup"] = (dot, text)
+        arrow = tk.Label(menu, text="›", font=(F, 15), fg=C["muted"], bg=C["card"])
+        arrow.grid(row=r, column=2, sticky="nsew", padx=(px(8), px(18)))
+        cells.append(arrow)
+        cells[0].rg_text, cells[0].rg_open = name, open_it  # (lets a screenshot script open it)
+        for c in cells:
+            c.config(cursor="hand2")
+            c.bind("<Button-1>", lambda _: open_it())
+            c.bind("<Enter>", lambda _: [x.config(bg=hover) for x in cells])
+            c.bind("<Leave>", lambda _: [x.config(bg=C["card"]) for x in cells])
+
+    def nb(text):
+        """Chinese text with no-break spaces: Tk breaks lines at spaces, and in Chinese the only ones are those
+        around Latin words and numbers ("30 分鐘或 2 小時" broke after the 2)."""
+        return text.replace(" ", " ") if config.LANG == "zh" else text
+
+    def page_title(host, title):
+        row = tk.Frame(host, bg=C["bg"])
+        row.pack(fill="x", pady=(0, px(4)))
+        rim, b = make_button(row, tr("‹ 返回", "‹ Back"), lambda: show_page("home"), "link", track=False)
+        b.config(font=(w["font"], 10), padx=px(8), pady=px(2))
+        rim.pack(side="left")
+        heading = tk.Label(row, text=title, font=(w["font"], 13, "bold"), fg=C["text"], bg=C["bg"])
+        heading.pack(side="left", padx=(px(8), 0))
+
+    def item(host, key, text, cmd, about, name="secondary", pair=None):
+        """A button (or two side by side) with what it does written under it."""
+        row = tk.Frame(host, bg=C["bg"])
+        row.pack(fill="x", pady=(px(10), 0))
+        for i, (k, t, c) in enumerate([(key, text, cmd)] + ([pair] if pair else [])):
+            rim, pw[k] = make_button(row, t, c, name)
+            if pair:
+                row.columnconfigure(i, weight=1, uniform="pair")
+                rim.grid(row=0, column=i, sticky="ew", padx=(0, px(4)) if i == 0 else (px(4), 0))
+            else:
+                rim.pack(fill="x")
+        tk.Label(host, text=nb(about), font=(w["font"], 9), fg=C["muted"], bg=C["bg"], anchor="w", justify="left",
+                 wraplength=px(470)).pack(fill="x", pady=(px(3), 0))
+
+    def page_protection(host):
+        page_title(host, tr("防護", "Protection"))
+        item(host, "install", tr("安裝並開始監控", "Install and start monitoring"), on_install,
+             tr("用目前這個版本安裝並開始背景監控，之後每次登入都會自動啟動。不會連網。",
+                "Installs background monitoring with this version and starts it; it starts every time you sign in. "
+                "Doesn't connect to the internet."))
+        item(host, "stop", tr("暫停／停止監控", "Pause or stop monitoring"), on_stop,
+             tr("大量整理檔案前暫停檔案偵測 30 分鐘或 2 小時（誘餌檔照常監控），或停止監控到重新開機。",
+                "Pauses file detection for 30 minutes or 2 hours before bulk work (canary files are still watched), "
+                "or stops monitoring until Windows restarts."))
+        item(host, "restore", tr("恢復網路並重新開啟監控", "Restore network and restart monitoring"), on_restore,
+             tr("誤判後使用：恢復網路與被暫停的程式（先經 Defender 檢查），並重新開始監控。",
+                "After a false alarm: turns the network back on, resumes paused programs Defender finds clean and "
+                "restarts monitoring."))
+
+    def page_tools(host):
+        page_title(host, tr("工具", "Tools"))
+        item(host, "selfcheck", tr("自我檢查", "Self-check"), on_selfcheck,
+             tr("確認防護真的在運作，並在暫存資料夾演練一次（不會斷網）。約 10 秒。",
+                "Makes sure protection really works, with a drill in a temporary folder (the network isn't cut). "
+                "About 10 seconds."))
+        item(host, "update", update_label(), lambda: run_bg(lambda rep: w.__setitem__("offer", updates.check_updates(rep))),
+             tr("連到 GitHub 檢查有沒有新版本，有的話會詢問是否更新。", "Asks GitHub whether there is a newer version and "
+                "offers to update if there is."), "primary" if w.get("new") else "secondary")
+        item(host, "preview", tr("預覽警告畫面", "Preview warning"), on_preview,
+             tr("顯示觸發時的全螢幕警告，不會切斷網路。", "Shows the full-screen warning, without cutting the network."))
+        item(host, "log", tr("開啟紀錄檔", "Open log"), on_log,
+             tr("紀錄檔記錄偵測到的檔案與程式，保留 30 天。", "The log lists detected files and programs, kept for 30 days."),
+             pair=("clear", tr("清除紀錄檔", "Clear log"), on_clear_log))
+
+    def page_settings(host):
+        page_title(host, tr("設定", "Settings"))
+        item(host, "folders", tr("監控的資料夾…", "Watched folders…"), on_watch_folders,
+             tr("除了桌面、文件、圖片、下載、影片、音樂，另外加入要監控的資料夾，例如 D 槽、隨身碟或 NAS。",
+                "Besides Desktop, Documents, Pictures, Downloads, Videos and Music, add folders to watch, such as "
+                "another drive, a USB drive or a NAS."))
+        row = tk.Frame(host, bg=C["bg"])
+        row.pack(fill="x", pady=(px(14), 0))
         w["auto"] = tk.BooleanVar(value=config.auto_update_check())
-        cb = tk.Checkbutton(foot, text=tr("自動檢查新版本", "Check for updates automatically"), variable=w["auto"],
-                            command=on_auto_update, font=(FONT, 10), fg=C["text"], bg=C["bg"],
-                            activebackground=C["bg"], selectcolor=C["card"], highlightthickness=0, bd=0,
-                            cursor="hand2")
-        cb.pack(side="left")
-        rim, b = make_button(foot, tr("監控的資料夾…", "Watched folders…"), on_watch_folders, "link",
-                             tr("加入其他要監控的資料夾，例如 D 槽、隨身碟或 NAS。", "Add more folders to watch, such as "
-                                "another drive, a USB drive or a NAS."))
-        b.config(font=(FONT, 10), padx=px(8), pady=px(4))
-        rim.pack(side="left", padx=(px(10), 0))
-        tip(cb, tr("開啟後，每 6 小時以及開啟控制台時會連到 GitHub 檢查新版本（GitHub 會看到這台電腦的 IP 位址）。預設關閉。",
-                   "When on, RansomGuard asks GitHub for new versions every 6 hours and when the control panel "
-                   "opens (GitHub sees this computer's IP address). Off by default."))
-        rim, b = make_button(foot, tr("解除安裝", "Uninstall"), on_uninstall, "danger",
-                             tr("移除背景監控、捷徑、誘餌檔、程式資料夾，以及紀錄檔和設定。",
-                                "Removes background monitoring, the shortcut, the canary files, the program folder, "
-                                "and the log and settings."))
-        b.config(font=(FONT, 10), padx=px(10), pady=px(4), width=10)  # same width in both languages
-        rim.pack(side="right")
+        tk.Checkbutton(row, text=tr("自動檢查新版本", "Check for updates automatically"), variable=w["auto"],
+                       command=on_auto_update, font=(w["font"], 11), fg=C["text"], bg=C["bg"],
+                       activebackground=C["bg"], selectcolor=C["card"], highlightthickness=0, bd=0,
+                       cursor="hand2").pack(side="left")
+        tk.Label(host, text=nb(tr("每 6 小時以及開啟控制台時連到 GitHub 檢查新版本；GitHub 會看到這台電腦的 IP 位址。預設關閉。",
+                                  "Asks GitHub for new versions every 6 hours and when the control panel opens; GitHub "
+                                  "sees this computer's IP address. Off by default.")),
+                 font=(w["font"], 9), fg=C["muted"], bg=C["bg"], anchor="w", justify="left",
+                 wraplength=px(470)).pack(fill="x", pady=(px(3), 0))
+        item(host, "uninstall", tr("解除安裝", "Uninstall"), on_uninstall,
+             tr("移除背景監控、捷徑、誘餌檔、程式資料夾，以及紀錄檔和設定。",
+                "Removes background monitoring, the shortcut, the canary files, the program folder, and the log "
+                "and settings."), "danger")
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     if config._LANG_ARG or config.saved_lang():

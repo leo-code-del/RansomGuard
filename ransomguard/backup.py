@@ -110,10 +110,11 @@ def remind_if_needed(now=None) -> bool:
     log.info(tr("提醒備份：%s（%s）", "Backup reminder: %s (%s)"), text, note)
     winapi.notice(tr("RansomGuard：備份提醒", "RansomGuard: backup reminder"),
                   tr(f"{text}：{note}。\n\nRansomGuard 能在勒索病毒發作時切斷網路，但沒辦法救回已經被加密的檔案，"
-                     "只有備份可以。\n\n開啟 RansomGuard 控制台，按「備份…」看設定方式。"
-                     f"\n（{REMIND_DAYS} 天後才會再提醒；在「備份…」選擇用其他備份程式，就不再提醒。）",
+                     "只有備份可以。\n\n開啟 RansomGuard 控制台，點首頁的「備份」看設定方式。"
+                     f"\n（{REMIND_DAYS} 天後才會再提醒；在「備份」裡選擇用其他備份程式，就不再提醒。）",
                      f"{text}: {note}.\n\nRansomGuard cuts the network when ransomware strikes, but it can't bring "
                      "encrypted files back. Only a backup can.\n\nOpen the RansomGuard control panel and click "
-                     f"\"Backup…\" to see how to set one up.\n(The next reminder comes in {REMIND_DAYS} days at the "
-                     "earliest; choose \"another backup program\" under \"Backup…\" to stop them.)"))
+                     f"\"Backup\" on its home page to see how to set one up.\n(The next reminder comes in "
+                     f"{REMIND_DAYS} days at the earliest; choose \"another backup program\" under \"Backup\" to stop "
+                     "them.)"))
     return True
