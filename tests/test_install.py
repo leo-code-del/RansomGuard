@@ -37,7 +37,8 @@ class UpdateTests(TempDirTest):
         rg.INSTALL_EXE.write_bytes(b"old version")
         self.payload = b"MZ new version " + random_bytes(1000)
 
-    def serve(self, tag="v1.5.0", digest=None, url="https://github.com/leo-code-del/RansomGuard/releases/download/v1.5.0/RansomGuard.exe",
+    def serve(self, tag="v1.5.0", digest=None,
+              url="https://github.com/leo-code-del/RansomGuard/releases/download/v1.5.0/RansomGuard.exe",
               payload=None, api_error=None):
         digest = digest if digest is not None else "sha256:" + hashlib.sha256(self.payload).hexdigest()
         release = {"tag_name": tag, "assets": [{"name": "RansomGuard.exe", "digest": digest, "size": len(self.payload),

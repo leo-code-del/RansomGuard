@@ -1,4 +1,5 @@
-"""Tests: settings, the log's privacy and the state only administrators can change. Shared helpers and the safety net are in support.py."""
+"""Tests: settings, the log's privacy and the state only administrators can change. Shared helpers and the
+safety net are in support.py."""
 import json
 import logging
 import os

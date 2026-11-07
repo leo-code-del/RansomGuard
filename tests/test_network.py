@@ -1,4 +1,5 @@
-"""Tests: cutting the network off, keeping it off and restoring it; the control panel's status. Shared helpers and the safety net are in support.py."""
+"""Tests: cutting the network off, keeping it off and restoring it; the control panel's status. Shared helpers
+and the safety net are in support.py."""
 import json
 import threading
 import unittest

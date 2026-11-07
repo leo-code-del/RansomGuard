@@ -1,4 +1,5 @@
-"""Tests: telling encryption from everyday work: broken files, file ends, extensions, ransom notes, the file-event handler and canary files. Shared helpers and the safety net are in support.py."""
+"""Tests: telling encryption from everyday work: broken files, file ends, extensions, ransom notes, the file-event
+handler and canary files. Shared helpers and the safety net are in support.py."""
 import base64
 import hashlib
 import io

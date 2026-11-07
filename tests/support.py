@@ -78,8 +78,8 @@ rg.log.addHandler(logging.NullHandler())
 rg.log.propagate = False
 rg.init_lang("en")
 
-REAL = {name: getattr(rg, name) for name in ("fullscreen_alert", "set_paused", "_known_folder", "state_dir",
-                                              "secure_state_dir")}
+REAL = {name: getattr(rg, name)
+        for name in ("fullscreen_alert", "set_paused", "_known_folder", "state_dir", "secure_state_dir")}
 SANDBOX = Path(tempfile.mkdtemp(prefix="rg_sandbox_"))
 TEST_PID = os.getpid()  # saved now: some tests replace os.getpid
 # the interpreter itself; in a venv, sys.executable is a small launcher that starts this as a child process

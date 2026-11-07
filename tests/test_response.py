@@ -1,4 +1,5 @@
-"""Tests: what happens on a trigger: pausing programs, the full-screen warning. Shared helpers and the safety net are in support.py."""
+"""Tests: what happens on a trigger: pausing programs, the full-screen warning. Shared helpers and the safety net
+are in support.py."""
 import base64
 import io
 import json
