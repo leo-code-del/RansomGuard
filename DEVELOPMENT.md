@@ -41,6 +41,7 @@ To run with Python instead of the exe, the project includes a few helper files (
 | `install` | Scheduled tasks, install, uninstall, the health check |
 | `updates` | New versions from GitHub |
 | `backup` | Whether files are backed up (File History, OneDrive) and the backup reminder |
+| `selftest` | The control panel's self-check: is protection really working, and a drill in a temporary folder |
 | `gui` | The control panel |
 | `app` | The monitor's main loop and the command line |
 

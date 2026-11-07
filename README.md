@@ -89,7 +89,8 @@ The buttons are in two groups. Rest the mouse on a button to see what it does. O
 | **Protection** | **Install and start monitoring** | Installs background monitoring with the version that is running and starts it, without contacting GitHub |
 | | **Stop monitoring** | Stops it until you click **Install and start monitoring** or restart Windows |
 | | **Restore network and restart monitoring** | Restores the network after a false alarm. While the network is cut, the control panel shows the detection report (why it triggered, which files looked encrypted, which programs were paused), and so does this button before it asks, so you can tell a false alarm from a real attack |
-| **Tools** | **Check for updates** | Asks GitHub whether there is a newer version and tells you; if there is, asks whether to update |
+| **Tools** | **Self-check** | Makes sure protection really works: background monitoring and the process monitor are running, in the control panel's version; the canary files are intact and hidden; only administrators can change the state folder; no errors since monitoring started; the network and backup state. Then a drill in a temporary folder (simulated encryption of 12 documents and a changed canary file, in test mode: no network cut, no warning) shows how fast detection reacts. Takes about 10 seconds, changes nothing |
+| | **Check for updates** | Asks GitHub whether there is a newer version and tells you; if there is, asks whether to update |
 | | **Preview warning** | Shows what the warning looks like, without cutting the network |
 | | **Open log** | Opens `%LOCALAPPDATA%\RansomGuard\guard.log` (entries older than 30 days are removed) |
 | | **Clear log** | Empties the log, which lists the files and programs that were detected |

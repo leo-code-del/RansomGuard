@@ -19,5 +19,21 @@ class SuiteTests(unittest.TestCase):
             self.assertIs(getattr(module, "tearDownModule", None), support.tearDownModule, f.name)
 
 
+    def test_no_name_is_defined_in_two_modules(self):
+        # `rg` finds each name in the one module that defines it; a second module with the same name would make
+        # tests read or replace the wrong one (a self-check `run` once shadowed the monitor's main loop)
+        import ast
+        homes = {}
+        for f in sorted((support.ROOT / "ransomguard").glob("*.py")):
+            for node in ast.parse(f.read_text(encoding="utf-8")).body:
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                    names = [node.name]
+                else:
+                    names = [t.id for t in getattr(node, "targets", []) if isinstance(t, ast.Name)]
+                for name in names:
+                    self.assertNotIn(name, homes, f"{name} is defined in {homes.get(name)} and {f.stem}")
+                    homes[name] = f.stem
+
+
 if __name__ == "__main__":
     unittest.main()

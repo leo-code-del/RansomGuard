@@ -6,7 +6,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import backup, canary, config, folders, install, network, response, storage, updates, winapi
+from . import backup, canary, config, folders, install, network, response, selftest, storage, updates, winapi
 from .config import log, tr
 from .winapi import norm
 
@@ -124,7 +124,7 @@ def gui(auto_update=False):
         """track: disable it while an action runs (not for buttons of a dialog, which may be gone by then)."""
         rim = tk.Frame(parent)  # 1px border (a tk button's own border can only be black on Windows)
         b = tk.Button(rim, text=text, command=cmd, font=(w["font"], 11), relief="flat", bd=0,
-                      highlightthickness=0, cursor="hand2", padx=px(12), pady=px(7))
+                      highlightthickness=0, cursor="hand2", padx=px(12), pady=px(5))
         b.pack(fill="both", padx=1, pady=1)
         if track:
             buttons.append(b)
@@ -505,10 +505,20 @@ def gui(auto_update=False):
         root.after_cancel(w["pump"])
         root.destroy()
 
+    def work_area_height() -> int:
+        """Height of the screen without the taskbar."""
+        try:
+            rect = (ctypes.c_long * 4)()
+            if ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rect), 0):  # SPI_GETWORKAREA
+                return rect[3] - rect[1]
+        except Exception:
+            pass
+        return root.winfo_screenheight()
+
     def center():
-        root.update_idletasks()  # center the window, slightly above the middle
-        root.geometry(f"+{(root.winfo_screenwidth() - root.winfo_width()) // 2}"
-                      f"+{(root.winfo_screenheight() - root.winfo_height()) // 3}")
+        root.update_idletasks()  # center the window, slightly above the middle, and above the taskbar
+        free = work_area_height() - root.winfo_height() - px(50)  # (50: title bar and frame)
+        root.geometry(f"+{(root.winfo_screenwidth() - root.winfo_width()) // 2}+{max(0, free // 3)}")
 
     def choose_lang():
         """First run: let the user pick the language (English first, then 中文(繁體))."""
@@ -557,7 +567,11 @@ def gui(auto_update=False):
             sizes.append((root.winfo_reqwidth(), root.winfo_reqheight()))
         config.LANG = chosen
         build()
-        root.geometry(f"{max(s[0] for s in sizes)}x{max(s[1] for s in sizes)}")
+        # the progress area is two lines, so the window fits a 768-pixel laptop screen; a taller screen gives it a
+        # few more lines (the self-check reports a dozen)
+        height = max(s[1] for s in sizes)
+        height += max(0, min(px(100), work_area_height() - px(50) - height))  # (50: title bar and frame)
+        root.geometry(f"{max(s[0] for s in sizes)}x{height}")
         refresh()
         center()
         root.deiconify()
@@ -582,7 +596,7 @@ def gui(auto_update=False):
         hdr = tk.Frame(frame, bg=C["header"])
         hdr.pack(fill="x")
         top = tk.Frame(hdr, bg=C["header"])
-        top.pack(fill="x", padx=px(22), pady=(px(16), 0))
+        top.pack(fill="x", padx=px(22), pady=(px(12), 0))
         tk.Label(top, text="RansomGuard", font=(FONT, 17, "bold"), fg="#ffffff",
                  bg=C["header"]).pack(side="left")
         tk.Label(top, text=f"v{config.VERSION}", font=(FONT, 10), fg="#94a3b8",
@@ -593,10 +607,10 @@ def gui(auto_update=False):
         rim.pack(side="right")
         tk.Label(hdr, text=tr("偵測勒索病毒行為，發現異常時自動切斷網路",
                               "Detects ransomware behavior and cuts off the network automatically"),
-                 font=(FONT, 10), fg="#cbd5e1", bg=C["header"]).pack(anchor="w", padx=px(22), pady=(px(2), px(16)))
+                 font=(FONT, 10), fg="#cbd5e1", bg=C["header"]).pack(anchor="w", padx=px(22), pady=(px(2), px(12)))
 
         body = tk.Frame(frame, bg=C["bg"])
-        body.pack(fill="both", expand=True, padx=px(22), pady=(px(18), px(16)))
+        body.pack(fill="both", expand=True, padx=px(22), pady=(px(14), px(10)))
 
         # status cards
         cards = tk.Frame(body, bg=C["bg"])
@@ -607,7 +621,7 @@ def gui(auto_update=False):
             f = tk.Frame(cards, bg=C["card"], highlightthickness=1, highlightbackground=C["border"])
             f.grid(row=0, column=col, sticky="nsew", padx=(0, px(6)) if col == 0 else (px(6), 0))
             tk.Label(f, text=title, font=(FONT, 10), fg=C["muted"],
-                     bg=C["card"]).pack(anchor="w", padx=px(16), pady=(px(12), 0))
+                     bg=C["card"]).pack(anchor="w", padx=px(16), pady=(px(10), 0))
             row = tk.Frame(f, bg=C["card"])
             row.pack(anchor="w", padx=px(16))
             dot = tk.Label(row, text="●", font=(FONT, 12), fg=C["off"], bg=C["card"])
@@ -647,14 +661,14 @@ def gui(auto_update=False):
 
         def section(title):
             row = tk.Frame(body, bg=C["bg"])
-            row.pack(fill="x", pady=(px(18), px(6)))
+            row.pack(fill="x", pady=(px(12), px(4)))
             tk.Label(row, text=title, font=(FONT, 10, "bold"), fg=C["muted"], bg=C["bg"]).pack(side="left")
             return row
 
         def grid(title, rows):
             """A titled group of buttons, two per row; a row with one button spans both columns.
             rows: [[(key, text, command, tooltip), ...], ...]; returns {key: button}."""
-            section(title)
+            w["section"] = section(title)
             g = tk.Frame(body, bg=C["bg"])
             g.pack(fill="x")
             g.columnconfigure((0, 1), weight=1, uniform="btn")
@@ -663,7 +677,7 @@ def gui(auto_update=False):
                 for c, (key, text, cmd, hint) in enumerate(row):
                     rim, made[key] = make_button(g, text, cmd, "secondary", hint)
                     rim.grid(row=r, column=c, columnspan=2 if len(row) == 1 else 1, sticky="ew",
-                             pady=(0, px(8)), padx=(0, 0) if len(row) == 1 else ((0, px(4)) if c == 0 else (px(4), 0)))
+                             pady=(0, px(6)), padx=(0, 0) if len(row) == 1 else ((0, px(4)) if c == 0 else (px(4), 0)))
             return made
 
         # protection: what keeps (or stops) the computer protected
@@ -681,6 +695,10 @@ def gui(auto_update=False):
                  "and restarts monitoring."))]]))
         # tools: everything else, each pair belongs together
         w.update(grid(tr("工具", "Tools"), [
+            [("selfcheck", tr("自我檢查", "Self-check"), lambda: run_bg(selftest.run_selfcheck),
+              tr("確認防護真的在運作：背景監控、程序監控、誘餌檔、狀態資料夾、錯誤紀錄，並在暫存資料夾演練一次（不會斷網）。",
+                 "Makes sure protection really works: background and process monitoring, canary files, the state "
+                 "folder, errors, and a drill in a temporary folder (the network isn't cut)."))],
             [("update", update_label(), lambda: run_bg(lambda rep: w.__setitem__("offer", updates.check_updates(rep))),
               tr("連到 GitHub 檢查有沒有新版本，有的話會詢問是否更新。", "Asks GitHub whether there is a newer version and "
                  "offers to update if there is.")),
@@ -691,12 +709,12 @@ def gui(auto_update=False):
              ("clear", tr("清除紀錄檔", "Clear log"), on_clear_log,
               tr("清空紀錄檔。", "Empties the log."))]]))
 
-        # progress of the action that runs (not the log file)
-        w["busy"] = tk.Label(section(tr("執行進度", "Progress")), text="", font=(FONT, 10),
-                             fg=C["ok"], bg=C["bg"])
+        # progress of the action that runs (not the log file), right under the buttons; "Working..." shows next to
+        # the Tools heading (a heading of its own would make the window too tall for a laptop screen)
+        w["busy"] = tk.Label(w["section"], text="", font=(FONT, 10), fg=C["ok"], bg=C["bg"])
         w["busy"].pack(side="right")
         w["out"] = out = scrolledtext.ScrolledText(
-            body, width=60, height=3, font=(FONT, 10), wrap="word", relief="flat", bd=0,
+            body, width=60, height=2, font=(FONT, 10), wrap="word", relief="flat", bd=0,
             bg=C["card"], fg=C["text"], highlightthickness=1, highlightbackground=C["border"],
             highlightcolor=C["border"], padx=px(10), pady=px(8))
         out.pack(fill="both", expand=True)  # takes up any spare room of the fixed-size window

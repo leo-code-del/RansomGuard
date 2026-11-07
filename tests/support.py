@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 MODULES = [importlib.import_module(f"ransomguard.{name}") for name in (
     "config", "winapi", "storage", "folders", "canary", "detection", "processes", "response", "defender",
-    "network", "install", "updates", "backup", "gui", "app")]
+    "network", "install", "updates", "backup", "selftest", "gui", "app")]
 
 
 class _Namespace:

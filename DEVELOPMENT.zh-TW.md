@@ -41,6 +41,7 @@ python ransom_guard.py --gui
 | `install` | 排程工作、安裝、解除安裝、防護狀態檢查 |
 | `updates` | 從 GitHub 取得新版本 |
 | `backup` | 檔案有沒有備份（檔案歷程記錄、OneDrive）與備份提醒 |
+| `selftest` | 控制台的自我檢查：防護是否真的在運作，以及在暫存資料夾的演練 |
 | `gui` | 控制台 |
 | `app` | 監控主迴圈與命令列 |
 

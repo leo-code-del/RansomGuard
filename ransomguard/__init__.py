@@ -14,6 +14,7 @@ Modules, roughly in the order a trigger goes through them:
   install    scheduled task, install, uninstall, health check
   updates    new versions from GitHub
   backup     whether files are backed up (File History, OneDrive) and the backup reminder
+  selftest   the control panel's self-check: is protection really working, and a drill
   gui        the control panel
   app        the monitor's main loop and the command line
 
