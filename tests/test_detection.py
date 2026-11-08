@@ -217,6 +217,19 @@ class HandlerTests(TempDirTest):
         self.fired = []
         self.h = rg.make_handler(self.canaries, self.fired.append, dry_run=True)
 
+    def test_the_recheck_cache_stays_cheap_when_full_of_recent_files(self):
+        # unpacking thousands of .js files: the cache fills with files checked moments ago. It must not be sifted
+        # again on every event (0.4 ms each), and files keep being checked as always.
+        now = time.monotonic()
+        self.h.checked = {f"c:\\x\\f{i}.js": ((1, 1), now) for i in range(4096)}
+        path = self.file("docs/late.txt", random_bytes())
+        self.h._broken(path)
+        self.assertLess(len(self.h.checked), 2048)
+        self.assertIn(rg.norm(path), self.h.checked)
+        for i in range(rg.BROKEN_THRESHOLD):  # detection is unaffected
+            self.h.on_any_event(FileModifiedEvent(self.file(f"docs/enc{i}.txt", random_bytes())))
+        self.assertEqual(len(self.fired), 1)
+
     def test_canaries_are_planted(self):
         self.assertEqual(sorted(p.name for p in self.canaries), sorted(rg.CANARY_NAMES))
         self.assertTrue(all(p.read_bytes() == rg.canary_bytes(p) for p in self.canaries))

@@ -440,8 +440,11 @@ def respond(reason: str, dry_run: bool, files=(), touched=()):
         cut = threading.Thread(target=lambda: result.update(ok=network.disconnect_network()), daemon=True)
         cut.start()
     # pause the encrypting program before anything else: every second it keeps running costs files
-    found = _early_paused[:]  # the programs behind a destructive command, paused already
-    _early_paused.clear()
+    # the programs behind a destructive command, paused already. Taken one by one: the process monitor may add one
+    # meanwhile, and a copy followed by clear() would lose it from the warning
+    found = []
+    while _early_paused:
+        found.append(_early_paused.pop(0))
     if config.PAUSE_ON_TRIGGER and config.IS_WINDOWS:
         seen = {p["pid"] for p in found}
         found += [p for p in pause_writers(dry_run, list(touched) + list(files)) if p["pid"] not in seen]

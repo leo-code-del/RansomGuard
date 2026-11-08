@@ -497,6 +497,10 @@ def make_handler(canaries, on_trigger, dry_run, on_new_file=None, excluded=()):
                 return None
             if len(self.checked) >= 4096:
                 self.checked = {k: v for k, v in self.checked.items() if now - v[1] < RECHECK_SEC}
+                if len(self.checked) >= 2048:
+                    # still full of recent files (unpacking thousands of .js files, say): sifting all of them again on
+                    # every event cost 0.4 ms each; start over instead (at worst a file is read once more)
+                    self.checked = {}
             self.checked[key] = (sig, now)
             reason = broken_reason(path, st)
             if (reason is None and Path(path).suffix.lower() in END_CHECKED_EXTS

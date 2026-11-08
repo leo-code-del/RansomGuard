@@ -75,6 +75,13 @@ class ProcessMonitorTests(unittest.TestCase):
             got.wait(15)
         self.assertTrue(hits, "process monitor did not report the marked process")
         self.assertIn("cmd.exe", hits[0])
+        # stopped, it lets go of its PowerShell and pipe (the monitor restarts a dead one up to 10 times an hour)
+        pm.stop()
+        self.assertIsNotNone(pm.proc.returncode, "the PowerShell is reaped")
+        deadline = time.monotonic() + 5
+        while not pm.proc.stdout.closed and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(pm.proc.stdout.closed, "its pipe is closed")
 
     def test_stop_monitor_recognizes_old_and_new_process_monitors(self):
         old_script = ("\n[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n"

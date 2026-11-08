@@ -50,17 +50,22 @@ def _cut_adapters(saved):
         timer.cancel()
 
 
-def disconnect_network() -> bool:
+def disconnect_network(again=False) -> bool:
+    """again: the network is cut already and an adapter came back on (keep_offline); the time of the detection
+    stays as it was."""
     if not config.IS_WINDOWS:
         log.error(tr("目前只支援 Windows 斷網", "Cutting the network is only supported on Windows"))
         return False
+    recorded = []
 
     def saved(names):
         with storage.state_lock:
             st = storage.load_state()
             st["disabled_adapters"] = sorted(set(st.get("disabled_adapters", []) + names))
-            st["triggered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            if not (again and st.get("triggered_at")):
+                st["triggered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             storage.save_state(st)
+        recorded.append(True)
 
     try:
         rc, err = _cut_adapters(saved)
@@ -68,6 +73,13 @@ def disconnect_network() -> bool:
             log.error(tr("停用網路卡時出現錯誤：%s", "Error while disabling network adapters: %s"), err)
     except Exception:
         log.exception(tr("停用網路卡失敗", "Failed to disable network adapters"))
+    if not recorded:
+        # PowerShell didn't even start (blocked or removed): the fallback below still cuts the network, and without
+        # this record the control panel would call it normal and restoring would never renew the address
+        try:
+            saved([])
+        except Exception:
+            log.exception(tr("無法記錄斷網狀態", "Could not record that the network was cut"))
 
     st = storage.load_state()
     up = adapters_up()
@@ -123,7 +135,7 @@ def keep_offline(proc):
         if proc.poll() is None and adapters_up() not in ("0", "?"):
             log.warning(tr("偵測到網路卡被重新啟用，再次切斷網路",
                            "A network adapter was re-enabled; cutting the network again"))
-            disconnect_network()
+            disconnect_network(again=True)
 
 
 def restore_network(report=print) -> bool:
@@ -148,14 +160,17 @@ def restore_network(report=print) -> bool:
     names = st.get("disabled_adapters") or []
     if names:
         report(tr("重新啟用網路卡...", "Re-enabling network adapters..."))
-        # enable them one by one, so a missing adapter (e.g. an unplugged USB one) doesn't stop the others
+        # enable them one by one, so a missing adapter (e.g. an unplugged USB one) doesn't stop the others.
+        # Matched by exact name, never with -Name: that reads [ ] * ? as wildcards, so "Ethernet [USB]" wasn't
+        # found and a "*" would have turned on adapters this program never turned off.
         _, out, err = winapi._ps(
-            f"$t = @(Get-NetAdapter -Name @({','.join(winapi._ps_quote(n) for n in names)}) "
-            "-ErrorAction SilentlyContinue | Where-Object {$_.Status -eq 'Disabled'}); "
-            "foreach ($a in $t) { try { Enable-NetAdapter -Name $a.Name -Confirm:$false "
+            f"$want = @({','.join(winapi._ps_quote(n) for n in names)}); "
+            "$t = @(Get-NetAdapter -ErrorAction SilentlyContinue | "
+            "Where-Object { $want -contains $_.Name -and $_.Status -eq 'Disabled' }); "
+            "foreach ($a in $t) { try { $a | Enable-NetAdapter -Confirm:$false "
             "-ErrorAction Stop; \"OK`t$($a.Name)\" } "
             "catch { \"FAIL`t$($a.Name)`t$($_.Exception.Message)\" } }")
-        lines = [line.split("\t") for line in out.splitlines() if line.strip()]
+        lines = [r for r in (line.split("\t") for line in out.splitlines()) if len(r) >= 2]
         for r in lines:
             if r[0] == "OK":
                 log.info(tr("已重新啟用網路卡：%s", "Network adapter re-enabled: %s"), r[1])

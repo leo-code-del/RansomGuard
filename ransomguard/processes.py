@@ -118,23 +118,38 @@ class ProcessMonitor:
         return self.proc is not None and self.proc.poll() is None
 
     def stop(self):
-        if self.proc is not None and self.proc.poll() is None:
-            self.proc.kill()
+        proc = self.proc
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            try:
+                proc.wait(5)  # reaped, so its handle doesn't stay open
+            except subprocess.TimeoutExpired:
+                pass
 
     def _read(self, proc):
-        for raw in proc.stdout or ():
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
-            if line.startswith("READY"):
-                log.info(tr("程序監控已啟動（即時追蹤：%s）", "Process monitor started (real-time trace: %s)"),
-                         line.endswith("True"))
-                continue
-            parts = line.split("\t", 3)
-            if len(parts) != 4:
-                continue
+        try:
+            for raw in proc.stdout or ():
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if line.startswith("READY"):
+                    log.info(tr("程序監控已啟動（即時追蹤：%s）", "Process monitor started (real-time trace: %s)"),
+                             line.endswith("True"))
+                    continue
+                parts = line.split("\t", 3)
+                if len(parts) != 4:
+                    continue
+                try:
+                    self._check(int(parts[0]), int(parts[1] or 0), parts[2], parts[3])
+                except Exception:
+                    log.exception(tr("檢查程序時發生錯誤", "Error while checking a process"))
+        finally:
+            # the PowerShell ended (or was stopped): let go of its pipe and process handle. The monitor restarts a
+            # dead one up to 10 times an hour, and each would otherwise leave both open.
+            if proc.stdout is not None:
+                proc.stdout.close()
             try:
-                self._check(int(parts[0]), int(parts[1] or 0), parts[2], parts[3])
-            except Exception:
-                log.exception(tr("檢查程序時發生錯誤", "Error while checking a process"))
+                proc.wait(5)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _check(self, pid, ppid, name, cmdline):
         if ppid == os.getpid() and name.lower() == "powershell.exe":  # started by this program itself

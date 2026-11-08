@@ -237,6 +237,7 @@ def run(args, stop=None):
                 restarts += 1
                 log.error(tr("檔案寫入追蹤意外停止，重新啟動（第 %d 次）",
                              "File write tracing stopped unexpectedly; restarting (attempt %d)"), restarts)
+                filetrace.current = None  # if the new one doesn't start, respond() must not ask the stopped one
                 trace.stop()
                 trace = start_trace()
     except KeyboardInterrupt:

@@ -364,8 +364,13 @@ def _run(args):
         log.error(tr("執行 %s 失敗：%s", "Failed to run %s: %s"), args, ex)
 
 
+# PowerShell ends a single-quoted string at the typographic quotes too, not only at ' (a device named
+# "Kevin’s iPhone" broke the whole command); each is doubled, as ' is
+_PS_SINGLE_QUOTES = re.compile("(['‘’‚‛])")
+
+
 def _ps_quote(s: str) -> str:
-    return "'" + str(s).replace("'", "''") + "'"
+    return "'" + _PS_SINGLE_QUOTES.sub(r"\1\1", str(s)) + "'"
 
 
 def boot_time() -> float:

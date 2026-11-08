@@ -1,6 +1,7 @@
 """Tests: cutting the network off, keeping it off and restoring it; the control panel's status. Shared helpers
 and the safety net are in support.py."""
 import json
+import subprocess
 import threading
 import unittest
 from pathlib import Path
@@ -121,6 +122,44 @@ class NetworkTests(TempDirTest):
         rg.disconnect_network()
         self.assertEqual(rg.load_state()["disabled_adapters"], ["Ethernet", "USB Ethernet", "Wi-Fi"])
 
+    def test_cutting_again_keeps_the_time_of_the_detection(self):
+        net = self.use(FakeNetwork())
+        rg.disconnect_network()
+        st = rg.load_state()
+        st["triggered_at"] = "2026-11-08 09:00:00"
+        rg.save_state(st)
+        net.up.add("USB Ethernet")
+        rg.disconnect_network(again=True)  # keep_offline: an adapter came back on while the warning is open
+        self.assertEqual(rg.load_state()["triggered_at"], "2026-11-08 09:00:00")
+
+    def test_the_cut_is_recorded_even_when_powershell_cannot_start(self):
+        net = self.use(FakeNetwork(disable_works=False))
+        with mock.patch.object(rg, "_cut_adapters", mock.Mock(side_effect=OSError("blocked"))):
+            self.assertFalse(rg.disconnect_network())
+        st = rg.load_state()
+        self.assertTrue(st.get("triggered_at"), "the control panel must show the network as cut")
+        self.assertTrue(rg.network_cut(st))
+        self.assertTrue(net.firewall_blocked)
+
+    def test_adapters_are_found_by_exact_name_not_as_wildcards(self):
+        net = self.use(FakeNetwork(adapters=("Ethernet [USB]", "Wi-Fi")))
+        rg.disconnect_network()
+        rg.restore_network(lambda m: None)
+        enable = next(c for c in net.commands if isinstance(c, str) and "Enable-NetAdapter" in c)
+        # -Name reads [ ] * ? as wildcards: "Ethernet [USB]" wouldn't be found, "*" would turn on every adapter
+        self.assertNotIn("-Name", enable)
+        self.assertIn("$want -contains $_.Name", enable)
+        self.assertIn("'Ethernet [USB]'", enable)
+
+    def test_powershell_quoting_round_trips(self):
+        # the real PowerShell, writing the text back: PowerShell also ends a '...' string at ‘ ’ ‚ ‛
+        for text in ("Kevin’s iPhone", "a'b", "‘x’ ‚y‛", "Ethernet [USB]", "$env:PATH `n"):
+            r = subprocess.run([rg.POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
+                                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output "
+                                + rg._ps_quote(text)], capture_output=True, timeout=60,
+                               creationflags=rg.CREATE_NO_WINDOW)
+            self.assertEqual(r.stdout.decode("utf-8").strip(), text, r.stderr.decode("utf-8", "replace")[:200])
+
     def test_the_adapter_names_are_saved_before_they_are_turned_off(self):
         # the real PowerShell, with a harmless script in place of the one that turns adapters off
         marker = self.dir / "saved"
@@ -206,9 +245,9 @@ class StatusAndOfflineTests(TempDirTest):
         polls = iter([None, None, None, 0, 0])  # the warning closes after two checks
         cut = []
         with mock.patch.object(rg.time, "sleep"), mock.patch.object(rg, "adapters_up", lambda: "1"), \
-                mock.patch.object(rg, "disconnect_network", lambda: cut.append(1)):
+                mock.patch.object(rg, "disconnect_network", lambda again=False: cut.append(again)):
             rg.keep_offline(mock.Mock(poll=lambda: next(polls)))
-        self.assertEqual(cut, [1])
+        self.assertEqual(cut, [True], "cut again, keeping the time of the detection")
 
     def test_download_scanner_worker_keeps_going_after_an_error(self):
         with mock.patch.object(rg, "_known_folder", lambda name: self.dir / name):
