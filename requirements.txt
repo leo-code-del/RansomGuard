@@ -1,2 +1,2 @@
 # Packages RansomGuard needs to run from source (python ransom_guard.py)
-watchdog==7.0.0
+watchdog==7.1.0
