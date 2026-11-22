@@ -153,7 +153,7 @@ class NetworkTests(TempDirTest):
 
     def test_powershell_quoting_round_trips(self):
         # the real PowerShell, writing the text back: PowerShell also ends a '...' string at ‘ ’ ‚ ‛
-        for text in ("Kevin’s iPhone", "a'b", "‘x’ ‚y‛", "Ethernet [USB]", "$env:PATH `n"):
+        for text in ("Alex’s iPhone", "a'b", "‘x’ ‚y‛", "Ethernet [USB]", "$env:PATH `n"):
             r = subprocess.run([rg.POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
                                 "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output "
                                 + rg._ps_quote(text)], capture_output=True, timeout=60,

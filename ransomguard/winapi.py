@@ -365,7 +365,7 @@ def _run(args):
 
 
 # PowerShell ends a single-quoted string at the typographic quotes too, not only at ' (a device named
-# "Kevin’s iPhone" broke the whole command); each is doubled, as ' is
+# "Alex’s iPhone" broke the whole command); each is doubled, as ' is
 _PS_SINGLE_QUOTES = re.compile("(['‘’‚‛])")
 
 
